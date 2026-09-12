@@ -33,12 +33,12 @@ grouped by prefix:
 | FP-002 | API endpoint pattern detected | Info | apidetect |
 | CRED-001 | API key or token pattern disclosed | High | credentials |
 | CRED-002 | Private key header disclosed | Critical | credentials |
+| OPSEC-003 | Public EXIF metadata in uploaded images | Low / High | metadata |
 
 ## Planned (see docs/ROADMAP.md Phase 2/3 and the issue tracker)
 
 | ID | Title |
 |---|---|
-| OPSEC-003 | Public EXIF metadata in uploaded images |
 | OPSEC-008 | Cloud provider metadata endpoint reference |
 
 ## Contributing a new rule
