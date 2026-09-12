@@ -171,11 +171,11 @@ func inspectChanges(oldF, newF model.Finding) []string {
 	return changes
 }
 
-// RenderText outputs a human-readable monitor diff report with NEW/REMOVED/CHANGED sections.
+// RenderText outputs a human-readable diff report with NEW/REMOVED/CHANGED sections.
 func RenderText(w io.Writer, d DiffResult) error {
 	sep := strings.Repeat("=", 78)
 	fmt.Fprintf(w, "%s\n", sep)
-	fmt.Fprintf(w, "MONITOR REPORT: %s\n", d.Target)
+	fmt.Fprintf(w, "SCAN DIFF REPORT: %s\n", d.Target)
 
 	if d.IsInitialScan {
 		fmt.Fprintf(w, "Scan ID:     %s (%s)\n", d.NewScanID, d.NewScanTime.UTC().Format(time.RFC3339))
@@ -267,9 +267,9 @@ func RenderJSON(w io.Writer, d DiffResult) error {
 	return enc.Encode(d)
 }
 
-// RenderMarkdown outputs a formatted markdown monitor report.
+// RenderMarkdown outputs a formatted markdown diff report.
 func RenderMarkdown(w io.Writer, d DiffResult) error {
-	fmt.Fprintf(w, "# Monitor Report: `%s`\n\n", d.Target)
+	fmt.Fprintf(w, "# Scan Diff Report: `%s`\n\n", d.Target)
 
 	if d.IsInitialScan {
 		fmt.Fprintf(w, "- **Scan ID:** `%s` (%s)\n", d.NewScanID, d.NewScanTime.UTC().Format(time.RFC3339))

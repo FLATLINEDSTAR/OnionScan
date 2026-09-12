@@ -314,6 +314,7 @@ func (s *SQLiteStore) Latest(onion string) (model.ScanResult, bool, error) {
 
 // GetScan returns a specific past scan by target onion and scan ID.
 func (s *SQLiteStore) GetScan(onion string, scanID string) (model.ScanResult, bool, error) {
+	scanID = strings.TrimSuffix(scanID, ".json")
 	var raw string
 	err := s.db.QueryRow(`
 		SELECT s.raw_json

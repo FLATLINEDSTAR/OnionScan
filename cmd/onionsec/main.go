@@ -15,6 +15,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -46,6 +47,8 @@ func main() {
 		cmdGraph(os.Args[2:])
 	case "monitor":
 		cmdMonitor(os.Args[2:])
+	case "diff":
+		cmdDiff(os.Args[2:])
 	case "version":
 		fmt.Println("onionsec " + version)
 	default:
@@ -64,6 +67,7 @@ Usage:
   onionsec report <target.onion>
   onionsec graph <target.onion> [--dot] [--out <path>]
   onionsec monitor <target.onion> [--config <path>] [--json <out.json>] [--md <out.md>]
+  onionsec diff <target.onion> <scan-id-1> <scan-id-2> [--json <out.json>] [--md <out.md>]
   onionsec version`)
 }
 
@@ -392,6 +396,106 @@ func cmdMonitor(args []string) {
 	}
 }
 
+func cmdDiff(args []string) {
+	if err := runDiff(args, os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func runDiff(args []string, stdout io.Writer) error {
+	var positional []string
+	var jsonPath string
+	var mdPath string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--json" || arg == "-json" {
+			if i+1 < len(args) {
+				jsonPath = args[i+1]
+				i++
+			} else {
+				return fmt.Errorf("error: --json requires a path argument")
+			}
+		} else if strings.HasPrefix(arg, "--json=") || strings.HasPrefix(arg, "-json=") {
+			parts := strings.SplitN(arg, "=", 2)
+			jsonPath = parts[1]
+		} else if arg == "--md" || arg == "-md" {
+			if i+1 < len(args) {
+				mdPath = args[i+1]
+				i++
+			} else {
+				return fmt.Errorf("error: --md requires a path argument")
+			}
+		} else if strings.HasPrefix(arg, "--md=") || strings.HasPrefix(arg, "-md=") {
+			parts := strings.SplitN(arg, "=", 2)
+			mdPath = parts[1]
+		} else if !strings.HasPrefix(arg, "-") {
+			positional = append(positional, arg)
+		}
+	}
+
+	if len(positional) < 3 {
+		return fmt.Errorf("usage: onionsec diff <target.onion> <scan-id-1> <scan-id-2> [--json <out.json>] [--md <out.md>]")
+	}
+
+	targetOnion := positional[0]
+	scanID1 := positional[1]
+	scanID2 := positional[2]
+
+	store, err := storage.New(defaultDataDir())
+	if err != nil {
+		return fmt.Errorf("storage error: %w", err)
+	}
+	defer store.Close()
+
+	scan1, ok1, err := store.GetScan(targetOnion, scanID1)
+	if err != nil {
+		return fmt.Errorf("error reading scan %q: %w", scanID1, err)
+	}
+	if !ok1 {
+		return fmt.Errorf("scan %q not found for target %q", scanID1, targetOnion)
+	}
+
+	scan2, ok2, err := store.GetScan(targetOnion, scanID2)
+	if err != nil {
+		return fmt.Errorf("error reading scan %q: %w", scanID2, err)
+	}
+	if !ok2 {
+		return fmt.Errorf("scan %q not found for target %q", scanID2, targetOnion)
+	}
+
+	d := diff.Diff(scan1, true, scan2)
+
+	if err := diff.RenderText(stdout, d); err != nil {
+		return fmt.Errorf("render diff report: %w", err)
+	}
+
+	if jsonPath != "" {
+		f, err := os.Create(jsonPath)
+		if err != nil {
+			return fmt.Errorf("create json output file: %w", err)
+		}
+		defer f.Close()
+		if err := diff.RenderJSON(f, d); err != nil {
+			return fmt.Errorf("write json report: %w", err)
+		}
+	}
+
+	if mdPath != "" {
+		f, err := os.Create(mdPath)
+		if err != nil {
+			return fmt.Errorf("create markdown output file: %w", err)
+		}
+		defer f.Close()
+		if err := diff.RenderMarkdown(f, d); err != nil {
+			return fmt.Errorf("write markdown report: %w", err)
+		}
+	}
+
+	return nil
+}
+
 func printSummary(r model.ScanResult) {
 	fmt.Printf("Target:     %s\n", r.Target.Onion)
 	fmt.Printf("Pages seen: %d\n", r.PagesSeen)
@@ -399,6 +503,9 @@ func printSummary(r model.ScanResult) {
 }
 
 func defaultDataDir() string {
+	if env := os.Getenv("ONIONSEC_DATA_DIR"); env != "" {
+		return env
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ".onionsec/onionsec.db"

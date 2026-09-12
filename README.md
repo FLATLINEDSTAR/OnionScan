@@ -49,6 +49,9 @@ go build -o onionsec ./cmd/onionsec
 # monitor changes against past scans
 ./onionsec monitor youronionaddresshere.onion
 
+# compare two specific past scans
+./onionsec diff youronionaddresshere.onion <scan-id-1> <scan-id-2>
+
 # generate evidence correlation graph (ASCII or DOT)
 ./onionsec graph youronionaddresshere.onion
 ```
