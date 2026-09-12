@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"time"
 )
 
 const (
@@ -21,6 +22,8 @@ const (
 	cmdConnect     = 0x01
 	atypDomainName = 0x03
 	repSucceeded   = 0x00
+
+	defaultDialTimeout = 30 * time.Second
 )
 
 // DialContext connects to targetAddr ("host:port") through the SOCKS5
@@ -30,14 +33,36 @@ func DialContext(ctx context.Context, proxyAddr, targetAddr string) (net.Conn, e
 	if proxyAddr == "" {
 		proxyAddr = DefaultSOCKSAddr
 	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", proxyAddr)
 	if err != nil {
 		return nil, fmt.Errorf("connect to tor proxy %s: %w", proxyAddr, err)
 	}
 
+	deadline, hasDeadline := ctx.Deadline()
+	if !hasDeadline {
+		deadline = time.Now().Add(defaultDialTimeout)
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("set deadline on tor connection: %w", err)
+	}
+
+	stop := context.AfterFunc(ctx, func() {
+		_ = conn.Close()
+	})
+	defer stop()
+
 	if err := handshake(conn); err != nil {
 		conn.Close()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, err
 	}
 
@@ -54,7 +79,16 @@ func DialContext(ctx context.Context, proxyAddr, targetAddr string) (net.Conn, e
 
 	if err := connect(conn, host, port); err != nil {
 		conn.Close()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, err
+	}
+
+	// Reset connection deadline so caller/HTTP transport can manage subsequent stream I/O.
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("reset deadline on tor connection: %w", err)
 	}
 
 	return conn, nil
