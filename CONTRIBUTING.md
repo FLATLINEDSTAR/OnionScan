@@ -59,4 +59,5 @@ your PR description if it applies.
 
 Please don't open a public issue for a vulnerability in OnionSec itself
 (as opposed to a scanning rule). Open a private security advisory via the
-repository's "Security" tab instead.
+repository's "Security" tab instead. See [`SECURITY.md`](SECURITY.md) for our
+supported versions and disclosure timeline expectations.
