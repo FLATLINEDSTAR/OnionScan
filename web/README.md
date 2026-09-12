@@ -29,6 +29,7 @@ A modern React/Next.js dashboard for OnionSec, providing real-time visibility in
 - **Finding Explorer**: Filter findings by severity (Critical, High, Medium, Low, Info), analyzer rule, target, or keyword search. Deep-dive inspection into finding confidence, source locations, and redacted corroborating evidence.
 - **Evidence & Asset Matrix**: View bipartite asset store records (co-occurring IPs, TLS certs, emails, server signatures) highlighting cross-target deanonymization and infrastructure overlap.
 - **Scan Diffing**: Directly compare scans for any target to isolate newly introduced, resolved, or persisting security issues and risk score deltas.
+- **Interactive Evidence Graph (Cytoscape.js)**: Visualize bipartite correlation graphs showing audited targets, evidence nodes (IPs, TLS certs, fingerprints), and cross-target co-occurring peer links with force-directed, concentric, and ring layouts, zoom/pan controls, element inspectors, and PNG export.
 - **API Configuration**: Easily change daemon endpoint URL and Bearer auth tokens in the dashboard UI.
 
 ## Build for Production

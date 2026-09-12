@@ -19,7 +19,8 @@ import {
   CheckCircle2,
   XCircle,
   Sliders,
-  FileText
+  FileText,
+  Network
 } from "lucide-react";
 import {
   api,
@@ -28,10 +29,12 @@ import {
   TargetItem,
   Finding,
   AssetItem,
-  DiffResult
+  DiffResult,
+  GraphResponse
 } from "../lib/api";
+import EvidenceGraph from "./components/EvidenceGraph";
 
-type Tab = "scans" | "findings" | "assets" | "diff" | "settings";
+type Tab = "scans" | "findings" | "assets" | "graph" | "diff" | "settings";
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState<Tab>("scans");
@@ -69,6 +72,11 @@ export default function DashboardPage() {
   const [diffNewScan, setDiffNewScan] = useState("");
   const [diffResult, setDiffResult] = useState<DiffResult | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
+
+  // Graph states
+  const [graphTarget, setGraphTarget] = useState("");
+  const [graphData, setGraphData] = useState<GraphResponse | null>(null);
+  const [graphLoading, setGraphLoading] = useState(false);
 
   // Settings states
   const [apiUrl, setApiUrl] = useState("http://127.0.0.1:8080");
@@ -169,6 +177,21 @@ export default function DashboardPage() {
       setError(`Diff failed: ${err.message}`);
     } finally {
       setDiffLoading(false);
+    }
+  };
+
+  // Load Evidence Graph
+  const loadGraph = async (tgt: string) => {
+    if (!tgt) return;
+    setGraphLoading(true);
+    setError(null);
+    try {
+      const res = await api.getGraph(tgt);
+      setGraphData(res);
+    } catch (err: any) {
+      setError(`Failed to fetch evidence graph: ${err.message}`);
+    } finally {
+      setGraphLoading(false);
     }
   };
 
@@ -296,6 +319,18 @@ export default function DashboardPage() {
             className={`btn ${activeTab === "assets" ? "btn-primary" : "btn-secondary"}`}
           >
             <Database size={16} /> Evidence Matrix ({assets.length})
+          </button>
+          <button
+            onClick={() => {
+              setActiveTab("graph");
+              if (!graphTarget && targets.length > 0) {
+                setGraphTarget(targets[0].target);
+                loadGraph(targets[0].target);
+              }
+            }}
+            className={`btn ${activeTab === "graph" ? "btn-primary" : "btn-secondary"}`}
+          >
+            <Network size={16} /> Evidence Graph
           </button>
           <button
             onClick={() => setActiveTab("diff")}
@@ -502,13 +537,27 @@ export default function DashboardPage() {
                             {new Date(s.ended_at || s.started_at).toLocaleString()}
                           </td>
                           <td style={{ padding: "12px 16px", textAlign: "right" }}>
-                            <button
-                              onClick={() => handleInspectScan(s.id)}
-                              className="btn btn-secondary"
-                              style={{ padding: "4px 10px", fontSize: "0.75rem" }}
-                            >
-                              Inspect <ChevronRight size={14} />
-                            </button>
+                            <div style={{ display: "flex", justifyContent: "flex-end", gap: "6px" }}>
+                              <button
+                                onClick={() => {
+                                  setGraphTarget(s.target);
+                                  loadGraph(s.target);
+                                  setActiveTab("graph");
+                                }}
+                                className="btn btn-secondary"
+                                style={{ padding: "4px 8px", fontSize: "0.75rem" }}
+                                title="View Evidence Graph"
+                              >
+                                <Network size={13} />
+                              </button>
+                              <button
+                                onClick={() => handleInspectScan(s.id)}
+                                className="btn btn-secondary"
+                                style={{ padding: "4px 10px", fontSize: "0.75rem" }}
+                              >
+                                Inspect <ChevronRight size={14} />
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -1040,6 +1089,52 @@ export default function DashboardPage() {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* TAB: EVIDENCE GRAPH */}
+        {activeTab === "graph" && (
+          <div>
+            <div className="card" style={{ marginBottom: "20px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
+                <div>
+                  <h3 style={{ fontSize: "1.125rem", fontWeight: 600 }}>Interactive Evidence Graph</h3>
+                  <p style={{ fontSize: "0.8125rem", color: "var(--text-secondary)", marginTop: "4px" }}>
+                    Cytoscape.js visualization of bipartite evidence nodes and co-occurring Tor hidden services.
+                  </p>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                  <label style={{ fontSize: "0.8125rem", color: "var(--text-secondary)" }}>Target:</label>
+                  <select
+                    value={graphTarget}
+                    onChange={(e) => {
+                      setGraphTarget(e.target.value);
+                      loadGraph(e.target.value);
+                    }}
+                    className="input mono"
+                    style={{ minWidth: "260px" }}
+                  >
+                    <option value="">-- Select Target --</option>
+                    {targets.map((t) => (
+                      <option key={t.target} value={t.target}>
+                        {t.target}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => loadGraph(graphTarget)}
+                    disabled={!graphTarget || graphLoading}
+                    className="btn btn-secondary"
+                    style={{ padding: "6px 12px", fontSize: "0.75rem" }}
+                  >
+                    <RefreshCw size={14} /> Refresh
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <EvidenceGraph data={graphData} target={graphTarget} loading={graphLoading} />
           </div>
         )}
 

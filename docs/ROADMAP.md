@@ -52,7 +52,7 @@ being worth doing. Don't jump to Phase 5 with a weak Phase 1.
 - [x] `POST /v1/scans`, `GET /v1/scans/:id`, `GET /v1/findings`,
       `GET /v1/assets`, `GET /v1/history`
 - [x] React/Next.js dashboard consuming the API
-- [ ] Evidence graph visualization (Cytoscape.js)
+- [x] Evidence graph visualization (Cytoscape.js)
 
 ## Explicit non-goals
 
