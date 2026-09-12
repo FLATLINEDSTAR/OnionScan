@@ -24,19 +24,24 @@ type ChangedFinding struct {
 
 // DiffResult holds the comprehensive comparison between two scans.
 type DiffResult struct {
-	Target          string           `json:"target"`
-	IsInitialScan   bool             `json:"is_initial_scan"`
-	OldScanID       string           `json:"old_scan_id,omitempty"`
-	NewScanID       string           `json:"new_scan_id"`
-	OldScanTime     time.Time        `json:"old_scan_time,omitempty"`
-	NewScanTime     time.Time        `json:"new_scan_time"`
-	OldRiskScore    int              `json:"old_risk_score"`
-	NewRiskScore    int              `json:"new_risk_score"`
-	ScoreDelta      int              `json:"score_delta"`
-	NewFindings     []model.Finding  `json:"new_findings"`
-	RemovedFindings []model.Finding  `json:"removed_findings"`
-	ChangedFindings []ChangedFinding `json:"changed_findings"`
-	UnchangedCount  int              `json:"unchanged_count"`
+	Target             string           `json:"target"`
+	IsInitialScan      bool             `json:"is_initial_scan"`
+	OldScanID          string           `json:"old_scan_id,omitempty"`
+	OldScan            string           `json:"old_scan,omitempty"`
+	NewScanID          string           `json:"new_scan_id"`
+	NewScan            string           `json:"new_scan"`
+	OldScanTime        time.Time        `json:"old_scan_time,omitempty"`
+	NewScanTime        time.Time        `json:"new_scan_time"`
+	OldRiskScore       int              `json:"old_risk_score"`
+	NewRiskScore       int              `json:"new_risk_score"`
+	ScoreDelta         int              `json:"score_delta"`
+	RiskScoreDelta     int              `json:"risk_score_delta"`
+	NewFindings        []model.Finding  `json:"new_findings"`
+	RemovedFindings    []model.Finding  `json:"removed_findings"`
+	ResolvedFindings   []model.Finding  `json:"resolved_findings"`
+	ChangedFindings    []ChangedFinding `json:"changed_findings"`
+	PersistingFindings []model.Finding  `json:"persisting_findings"`
+	UnchangedCount     int              `json:"unchanged_count"`
 }
 
 // HasChanges returns true if there are any new, removed, or changed findings or a score change.
@@ -50,14 +55,20 @@ func Diff(oldScan model.ScanResult, hasOld bool, newScan model.ScanResult) DiffR
 
 	if !hasOld {
 		return DiffResult{
-			Target:         newScan.Target.Onion,
-			IsInitialScan:  true,
-			NewScanID:      newScanID,
-			NewScanTime:    newScan.EndedAt,
-			NewRiskScore:   newScan.RiskScore,
-			ScoreDelta:     newScan.RiskScore,
-			NewFindings:    newScan.Findings,
-			UnchangedCount: 0,
+			Target:             newScan.Target.Onion,
+			IsInitialScan:      true,
+			NewScanID:          newScanID,
+			NewScan:            newScanID,
+			NewScanTime:        newScan.EndedAt,
+			NewRiskScore:       newScan.RiskScore,
+			ScoreDelta:         newScan.RiskScore,
+			RiskScoreDelta:     newScan.RiskScore,
+			NewFindings:        newScan.Findings,
+			RemovedFindings:    nil,
+			ResolvedFindings:   nil,
+			ChangedFindings:    nil,
+			PersistingFindings: nil,
+			UnchangedCount:     0,
 		}
 	}
 
@@ -75,6 +86,7 @@ func Diff(oldScan model.ScanResult, hasOld bool, newScan model.ScanResult) DiffR
 
 	var newFindings []model.Finding
 	var changedFindings []ChangedFinding
+	var persistingFindings []model.Finding
 	unchangedCount := 0
 
 	// Check each finding in new scan against old scan
@@ -85,6 +97,7 @@ func Diff(oldScan model.ScanResult, hasOld bool, newScan model.ScanResult) DiffR
 			continue
 		}
 
+		persistingFindings = append(persistingFindings, nf)
 		changes := inspectChanges(of, nf)
 		if len(changes) > 0 {
 			changedFindings = append(changedFindings, ChangedFinding{
@@ -107,20 +120,27 @@ func Diff(oldScan model.ScanResult, hasOld bool, newScan model.ScanResult) DiffR
 		}
 	}
 
+	scoreDelta := newScan.RiskScore - oldScan.RiskScore
+
 	return DiffResult{
-		Target:          newScan.Target.Onion,
-		IsInitialScan:   false,
-		OldScanID:       oldScanID,
-		NewScanID:       newScanID,
-		OldScanTime:     oldScan.EndedAt,
-		NewScanTime:     newScan.EndedAt,
-		OldRiskScore:    oldScan.RiskScore,
-		NewRiskScore:    newScan.RiskScore,
-		ScoreDelta:      newScan.RiskScore - oldScan.RiskScore,
-		NewFindings:     newFindings,
-		RemovedFindings: removedFindings,
-		ChangedFindings: changedFindings,
-		UnchangedCount:  unchangedCount,
+		Target:             newScan.Target.Onion,
+		IsInitialScan:      false,
+		OldScanID:          oldScanID,
+		OldScan:            oldScanID,
+		NewScanID:          newScanID,
+		NewScan:            newScanID,
+		OldScanTime:        oldScan.EndedAt,
+		NewScanTime:        newScan.EndedAt,
+		OldRiskScore:       oldScan.RiskScore,
+		NewRiskScore:       newScan.RiskScore,
+		ScoreDelta:         scoreDelta,
+		RiskScoreDelta:     scoreDelta,
+		NewFindings:        newFindings,
+		RemovedFindings:    removedFindings,
+		ResolvedFindings:   removedFindings,
+		ChangedFindings:    changedFindings,
+		PersistingFindings: persistingFindings,
+		UnchangedCount:     unchangedCount,
 	}
 }
 

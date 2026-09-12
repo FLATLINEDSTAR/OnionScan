@@ -136,11 +136,15 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 type targetSummary struct {
-	Onion           string    `json:"onion"`
-	FirstScannedAt  time.Time `json:"first_scanned_at"`
-	LastScannedAt   time.Time `json:"last_scanned_at"`
-	TotalScans      int       `json:"total_scans"`
-	LatestRiskScore int       `json:"latest_risk_score"`
+	Onion               string    `json:"onion"`
+	Target              string    `json:"target"`
+	FirstScannedAt      time.Time `json:"first_scanned_at"`
+	LastScannedAt       time.Time `json:"last_scanned_at"`
+	LatestScanAt        time.Time `json:"latest_scan_at"`
+	TotalScans          int       `json:"total_scans"`
+	ScanCount           int       `json:"scan_count"`
+	LatestRiskScore     int       `json:"latest_risk_score"`
+	LatestFindingsCount int       `json:"latest_findings_count"`
 }
 
 func (s *Server) handleGetTargets(w http.ResponseWriter, r *http.Request) {
@@ -158,16 +162,21 @@ func (s *Server) handleGetTargets(w http.ResponseWriter, r *http.Request) {
 		}
 		latest := hist[len(hist)-1]
 		summaries = append(summaries, targetSummary{
-			Onion:           onion,
-			FirstScannedAt:  hist[0].StartedAt,
-			LastScannedAt:   latest.EndedAt,
-			TotalScans:      len(hist),
-			LatestRiskScore: latest.RiskScore,
+			Onion:               onion,
+			Target:              onion,
+			FirstScannedAt:      hist[0].StartedAt,
+			LastScannedAt:       latest.EndedAt,
+			LatestScanAt:        latest.EndedAt,
+			TotalScans:          len(hist),
+			ScanCount:           len(hist),
+			LatestRiskScore:     latest.RiskScore,
+			LatestFindingsCount: len(latest.Findings),
 		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"targets": summaries,
+		"total":   len(summaries),
 	})
 }
 
@@ -735,7 +744,13 @@ func (s *Server) handleGetGraph(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetDiff(w http.ResponseWriter, r *http.Request) {
 	target := r.URL.Query().Get("target")
 	oldScanID := r.URL.Query().Get("old_scan")
+	if oldScanID == "" {
+		oldScanID = r.URL.Query().Get("old_scan_id")
+	}
 	newScanID := r.URL.Query().Get("new_scan")
+	if newScanID == "" {
+		newScanID = r.URL.Query().Get("new_scan_id")
+	}
 
 	if target == "" || oldScanID == "" || newScanID == "" {
 		writeJSONError(w, http.StatusBadRequest, "INVALID_PARAM", "target, old_scan, and new_scan query parameters are required")

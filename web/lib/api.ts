@@ -36,8 +36,12 @@ export interface ScanDetail extends ScanItem {
 
 export interface TargetItem {
   target: string;
+  onion?: string;
   scan_count: number;
+  total_scans?: number;
   latest_scan_at: string;
+  last_scanned_at?: string;
+  first_scanned_at?: string;
   latest_risk_score: number;
   latest_findings_count: number;
 }
@@ -53,11 +57,16 @@ export interface AssetItem {
 export interface DiffResult {
   target: string;
   old_scan: string;
+  old_scan_id?: string;
   new_scan: string;
+  new_scan_id?: string;
   risk_score_delta: number;
+  score_delta?: number;
   new_findings: Finding[];
   resolved_findings: Finding[];
+  removed_findings?: Finding[];
   persisting_findings: Finding[];
+  changed_findings?: any[];
 }
 
 export interface GraphNodeData {
@@ -159,7 +168,20 @@ export class ApiClient {
   }
 
   async listTargets(): Promise<{ targets: TargetItem[]; total: number }> {
-    return this.request<{ targets: TargetItem[]; total: number }>("/v1/targets");
+    const res = await this.request<{ targets: any[]; total?: number }>("/v1/targets");
+    const rawTargets = res.targets || [];
+    const targets: TargetItem[] = rawTargets.map((t) => ({
+      target: t.target || t.onion || "",
+      onion: t.onion || t.target || "",
+      scan_count: t.scan_count ?? t.total_scans ?? 0,
+      total_scans: t.total_scans ?? t.scan_count ?? 0,
+      latest_scan_at: t.latest_scan_at || t.last_scanned_at || "",
+      last_scanned_at: t.last_scanned_at || t.latest_scan_at || "",
+      first_scanned_at: t.first_scanned_at || "",
+      latest_risk_score: t.latest_risk_score ?? 0,
+      latest_findings_count: t.latest_findings_count ?? 0,
+    }));
+    return { targets, total: res.total ?? targets.length };
   }
 
   async listScans(target?: string): Promise<{ scans: ScanItem[]; total: number }> {
@@ -200,7 +222,21 @@ export class ApiClient {
   }
 
   async getDiff(target: string, oldScan: string, newScan: string): Promise<DiffResult> {
-    return this.request<DiffResult>(`/v1/diff?target=${encodeURIComponent(target)}&old_scan=${encodeURIComponent(oldScan)}&new_scan=${encodeURIComponent(newScan)}`);
+    const res = await this.request<any>(`/v1/diff?target=${encodeURIComponent(target)}&old_scan=${encodeURIComponent(oldScan)}&new_scan=${encodeURIComponent(newScan)}`);
+    return {
+      target: res.target || target,
+      old_scan: res.old_scan || res.old_scan_id || oldScan,
+      old_scan_id: res.old_scan_id || res.old_scan || oldScan,
+      new_scan: res.new_scan || res.new_scan_id || newScan,
+      new_scan_id: res.new_scan_id || res.new_scan || newScan,
+      risk_score_delta: res.risk_score_delta ?? res.score_delta ?? 0,
+      score_delta: res.score_delta ?? res.risk_score_delta ?? 0,
+      new_findings: res.new_findings || [],
+      resolved_findings: res.resolved_findings || res.removed_findings || [],
+      removed_findings: res.removed_findings || res.resolved_findings || [],
+      persisting_findings: res.persisting_findings || (res.changed_findings || []).map((c: any) => c.new_finding || c) || [],
+      changed_findings: res.changed_findings || [],
+    };
   }
 
   async getGraph(target: string): Promise<GraphResponse> {

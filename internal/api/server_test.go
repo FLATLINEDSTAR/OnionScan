@@ -265,6 +265,143 @@ func TestEndpoints_Diff(t *testing.T) {
 	}
 }
 
+func TestJSONSchemaFieldNames_TargetsAndDiff(t *testing.T) {
+	srv, store, _ := setupTestServer(t, "")
+	defer store.Close()
+
+	onion := "schematest.onion"
+	now := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+
+	f1 := model.Finding{ID: "RULE-001", Title: "Old Resolved Finding", Severity: model.SeverityLow}
+	f2Old := model.Finding{ID: "RULE-002", Title: "Persisting Finding", Severity: model.SeverityLow, Confidence: 0.5}
+	f2New := model.Finding{ID: "RULE-002", Title: "Persisting Finding", Severity: model.SeverityHigh, Confidence: 0.9}
+	f3 := model.Finding{ID: "RULE-003", Title: "Newly Introduced Finding", Severity: model.SeverityCritical}
+
+	scan1 := model.ScanResult{
+		Target:    model.Target{Onion: onion},
+		StartedAt: now,
+		EndedAt:   now.Add(1 * time.Minute),
+		RiskScore: 25,
+		Findings:  []model.Finding{f1, f2Old},
+	}
+	id1, err := store.Save(scan1)
+	if err != nil {
+		t.Fatalf("save scan1 failed: %v", err)
+	}
+
+	scan2 := model.ScanResult{
+		Target:    model.Target{Onion: onion},
+		StartedAt: now.Add(10 * time.Minute),
+		EndedAt:   now.Add(11 * time.Minute),
+		RiskScore: 60,
+		Findings:  []model.Finding{f2New, f3},
+	}
+	id2, err := store.Save(scan2)
+	if err != nil {
+		t.Fatalf("save scan2 failed: %v", err)
+	}
+
+	// 1. Verify GET /v1/targets JSON schema
+	reqTargets := httptest.NewRequest(http.MethodGet, "/v1/targets", nil)
+	recTargets := httptest.NewRecorder()
+	srv.ServeHTTP(recTargets, reqTargets)
+	if recTargets.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /v1/targets, got %d", recTargets.Code)
+	}
+
+	var targetsRaw map[string]interface{}
+	if err := json.Unmarshal(recTargets.Body.Bytes(), &targetsRaw); err != nil {
+		t.Fatalf("failed to decode targets JSON: %v", err)
+	}
+
+	if targetsRaw["total"] == nil || targetsRaw["total"].(float64) < 1 {
+		t.Errorf("expected non-zero total in targets response, got %v", targetsRaw["total"])
+	}
+
+	rawList, ok := targetsRaw["targets"].([]interface{})
+	if !ok || len(rawList) == 0 {
+		t.Fatalf("expected non-empty targets array, got %+v", targetsRaw)
+	}
+	tItem := rawList[0].(map[string]interface{})
+
+	// Assert both Go and TypeScript expected field names are present and matching
+	if tItem["target"] != onion {
+		t.Errorf("expected target %q, got %v", onion, tItem["target"])
+	}
+	if tItem["onion"] != onion {
+		t.Errorf("expected onion %q, got %v", onion, tItem["onion"])
+	}
+	if tItem["scan_count"].(float64) != 2 {
+		t.Errorf("expected scan_count 2, got %v", tItem["scan_count"])
+	}
+	if tItem["total_scans"].(float64) != 2 {
+		t.Errorf("expected total_scans 2, got %v", tItem["total_scans"])
+	}
+	if tItem["latest_scan_at"] == nil || tItem["latest_scan_at"] == "" {
+		t.Errorf("expected latest_scan_at timestamp, got %v", tItem["latest_scan_at"])
+	}
+	if tItem["last_scanned_at"] == nil || tItem["last_scanned_at"] == "" {
+		t.Errorf("expected last_scanned_at timestamp, got %v", tItem["last_scanned_at"])
+	}
+	if tItem["latest_risk_score"].(float64) != 60 {
+		t.Errorf("expected latest_risk_score 60, got %v", tItem["latest_risk_score"])
+	}
+	if tItem["latest_findings_count"].(float64) != 2 {
+		t.Errorf("expected latest_findings_count 2, got %v", tItem["latest_findings_count"])
+	}
+
+	// 2. Verify GET /v1/diff JSON schema
+	reqDiff := httptest.NewRequest(http.MethodGet, "/v1/diff?target="+onion+"&old_scan="+id1+"&new_scan="+id2, nil)
+	recDiff := httptest.NewRecorder()
+	srv.ServeHTTP(recDiff, reqDiff)
+	if recDiff.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /v1/diff, got %d: %s", recDiff.Code, recDiff.Body.String())
+	}
+
+	var diffRaw map[string]interface{}
+	if err := json.Unmarshal(recDiff.Body.Bytes(), &diffRaw); err != nil {
+		t.Fatalf("failed to decode diff JSON: %v", err)
+	}
+
+	// Assert diff schema aliases
+	if diffRaw["target"] != onion {
+		t.Errorf("expected target %q, got %v", onion, diffRaw["target"])
+	}
+	if diffRaw["old_scan"] != id1 || diffRaw["old_scan_id"] != id1 {
+		t.Errorf("expected old_scan and old_scan_id %q, got %v and %v", id1, diffRaw["old_scan"], diffRaw["old_scan_id"])
+	}
+	if diffRaw["new_scan"] != id2 || diffRaw["new_scan_id"] != id2 {
+		t.Errorf("expected new_scan and new_scan_id %q, got %v and %v", id2, diffRaw["new_scan"], diffRaw["new_scan_id"])
+	}
+	if diffRaw["risk_score_delta"].(float64) != 35 || diffRaw["score_delta"].(float64) != 35 {
+		t.Errorf("expected risk_score_delta and score_delta 35, got %v and %v", diffRaw["risk_score_delta"], diffRaw["score_delta"])
+	}
+
+	newFindings := diffRaw["new_findings"].([]interface{})
+	if len(newFindings) != 1 {
+		t.Errorf("expected 1 new finding, got %d", len(newFindings))
+	}
+
+	resolvedFindings := diffRaw["resolved_findings"].([]interface{})
+	removedFindings := diffRaw["removed_findings"].([]interface{})
+	if len(resolvedFindings) != 1 || len(removedFindings) != 1 {
+		t.Errorf("expected 1 resolved/removed finding, got %d and %d", len(resolvedFindings), len(removedFindings))
+	}
+
+	persistingFindings := diffRaw["persisting_findings"].([]interface{})
+	if len(persistingFindings) != 1 {
+		t.Errorf("expected 1 persisting finding, got %d", len(persistingFindings))
+	}
+
+	// 3. Test alias query parameters for /v1/diff
+	reqDiffAliases := httptest.NewRequest(http.MethodGet, "/v1/diff?target="+onion+"&old_scan_id="+id1+"&new_scan_id="+id2, nil)
+	recDiffAliases := httptest.NewRecorder()
+	srv.ServeHTTP(recDiffAliases, reqDiffAliases)
+	if recDiffAliases.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /v1/diff with aliases, got %d", recDiffAliases.Code)
+	}
+}
+
 func TestCreateScan_TargetValidation(t *testing.T) {
 	srv, store, _ := setupTestServer(t, "")
 	defer store.Close()
