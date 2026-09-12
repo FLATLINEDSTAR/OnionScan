@@ -163,13 +163,9 @@ func (s *Server) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target := strings.TrimSpace(req.Target)
-	target = strings.TrimPrefix(target, "http://")
-	target = strings.TrimPrefix(target, "https://")
-	target = strings.TrimRight(target, "/")
-
-	if target == "" {
-		writeJSONError(w, http.StatusBadRequest, "INVALID_TARGET", "Target onion address is required")
+	target, err := model.ValidateOnion(req.Target)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "INVALID_TARGET", fmt.Sprintf("Invalid target onion address: %v", err))
 		return
 	}
 

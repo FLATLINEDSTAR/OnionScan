@@ -264,3 +264,36 @@ func TestEndpoints_Diff(t *testing.T) {
 		t.Errorf("expected score delta 20, got %d", d.ScoreDelta)
 	}
 }
+
+func TestCreateScan_TargetValidation(t *testing.T) {
+	srv, store, _ := setupTestServer(t, "")
+	defer store.Close()
+
+	invalidTargets := []string{
+		"",
+		"   ",
+		"../../escaping",
+		"../target.onion",
+		"target.onion/path",
+		"target.onion\\path",
+		"google.com",
+		"https://evil.org",
+		"target..onion",
+		"-badhost.onion",
+	}
+
+	for _, target := range invalidTargets {
+		body, _ := json.Marshal(map[string]interface{}{
+			"target": target,
+		})
+		req := httptest.NewRequest(http.MethodPost, "/v1/scans", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		srv.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected 400 Bad Request for target %q, got %d: %s", target, rec.Code, rec.Body.String())
+		}
+	}
+}

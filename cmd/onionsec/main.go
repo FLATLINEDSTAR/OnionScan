@@ -86,20 +86,21 @@ Usage:
 }
 
 func cleanOnion(s string) string {
-	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "http://")
-	s = strings.TrimPrefix(s, "https://")
-	s = strings.TrimRight(s, "/")
-	return s
+	cleaned, err := model.ValidateOnion(s)
+	if err != nil {
+		return s
+	}
+	return cleaned
 }
 
 func loadTargets(targetArg, targetsFilePath string) ([]string, error) {
 	var targets []string
 	if targetArg != "" {
-		cleaned := cleanOnion(targetArg)
-		if cleaned != "" {
-			targets = append(targets, cleaned)
+		cleaned, err := model.ValidateOnion(targetArg)
+		if err != nil {
+			return nil, fmt.Errorf("invalid target %q: %w", targetArg, err)
 		}
+		targets = append(targets, cleaned)
 	}
 	if targetsFilePath != "" {
 		data, err := os.ReadFile(targetsFilePath)
@@ -107,15 +108,16 @@ func loadTargets(targetArg, targetsFilePath string) ([]string, error) {
 			return nil, fmt.Errorf("read targets file %q: %w", targetsFilePath, err)
 		}
 		lines := strings.Split(string(data), "\n")
-		for _, line := range lines {
+		for lineNo, line := range lines {
 			line = strings.TrimSpace(line)
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			cleaned := cleanOnion(line)
-			if cleaned != "" {
-				targets = append(targets, cleaned)
+			cleaned, err := model.ValidateOnion(line)
+			if err != nil {
+				return nil, fmt.Errorf("targets file %s line %d: invalid target %q: %w", targetsFilePath, lineNo+1, line, err)
 			}
+			targets = append(targets, cleaned)
 		}
 	}
 	return targets, nil
@@ -309,19 +311,24 @@ func cmdReport(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: onionsec report <target.onion>")
 		os.Exit(1)
 	}
+	target, err := model.ValidateOnion(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid target %q: %v\n", args[0], err)
+		os.Exit(1)
+	}
 	store, err := storage.New(defaultDataDir())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "storage error:", err)
 		os.Exit(1)
 	}
 	defer store.Close()
-	result, ok, err := store.Latest(args[0])
+	result, ok, err := store.Latest(target)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "read history:", err)
 		os.Exit(1)
 	}
 	if !ok {
-		fmt.Fprintln(os.Stderr, "no saved scans for", args[0], "-- run `onionsec scan` first")
+		fmt.Fprintln(os.Stderr, "no saved scans for", target, "-- run `onionsec scan` first")
 		os.Exit(1)
 	}
 	_ = report.WriteMarkdown(os.Stdout, result)
@@ -356,6 +363,13 @@ func cmdGraph(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: onionsec graph <target.onion> [--dot] [--out <path>]")
 		os.Exit(1)
 	}
+
+	validTarget, err := model.ValidateOnion(targetOnion)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid target %q: %v\n", targetOnion, err)
+		os.Exit(1)
+	}
+	targetOnion = validTarget
 
 	store, err := storage.New(defaultDataDir())
 	if err != nil {
@@ -689,7 +703,10 @@ func runDiff(args []string, stdout io.Writer) error {
 		return fmt.Errorf("usage: onionsec diff <target.onion> <scan-id-1> <scan-id-2> [--json <out.json>] [--md <out.md>]")
 	}
 
-	targetOnion := positional[0]
+	targetOnion, err := model.ValidateOnion(positional[0])
+	if err != nil {
+		return fmt.Errorf("invalid target %q: %w", positional[0], err)
+	}
 	scanID1 := positional[1]
 	scanID2 := positional[2]
 

@@ -28,9 +28,26 @@ func (s *FileStore) Close() error {
 	return nil
 }
 
-func (s *FileStore) targetDir(onion string) string {
-	safe := strings.NewReplacer("/", "_", ":", "_").Replace(onion)
-	return filepath.Join(s.BaseDir, safe)
+func (s *FileStore) targetDir(onion string) (string, error) {
+	trimmed := strings.TrimSpace(onion)
+	if trimmed == "" || strings.Contains(trimmed, "..") || trimmed == "." {
+		return "", fmt.Errorf("invalid or traversing target path: %q", onion)
+	}
+
+	safe := strings.NewReplacer("/", "_", "\\", "_", ":", "_").Replace(trimmed)
+	safe = strings.Trim(safe, "_.")
+	safe = strings.TrimSpace(safe)
+	if safe == "" {
+		return "", fmt.Errorf("invalid or traversing target path: %q", onion)
+	}
+
+	cleanBase := filepath.Clean(s.BaseDir)
+	targetPath := filepath.Clean(filepath.Join(cleanBase, safe))
+	rel, err := filepath.Rel(cleanBase, targetPath)
+	if err != nil || strings.HasPrefix(rel, "..") || rel == "." {
+		return "", fmt.Errorf("target path %q traverses outside base directory %q", onion, s.BaseDir)
+	}
+	return targetPath, nil
 }
 
 func (s *FileStore) indexDir(evType model.EvidenceType) string {
@@ -42,7 +59,10 @@ func (s *FileStore) Save(result model.ScanResult) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	dir := s.targetDir(result.Target.Onion)
+	dir, err := s.targetDir(result.Target.Onion)
+	if err != nil {
+		return "", fmt.Errorf("target directory: %w", err)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create scan dir: %w", err)
 	}
@@ -73,7 +93,10 @@ func (s *FileStore) History(onion string) ([]model.ScanResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	dir := s.targetDir(onion)
+	dir, err := s.targetDir(onion)
+	if err != nil {
+		return nil, fmt.Errorf("target directory: %w", err)
+	}
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -119,10 +142,16 @@ func (s *FileStore) GetScan(onion string, scanID string) (model.ScanResult, bool
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	dir, err := s.targetDir(onion)
+	if err != nil {
+		return model.ScanResult{}, false, fmt.Errorf("target directory: %w", err)
+	}
+
 	if !strings.HasSuffix(scanID, ".json") {
 		scanID = scanID + ".json"
 	}
-	path := filepath.Join(s.targetDir(onion), scanID)
+	cleanScanID := filepath.Base(scanID)
+	path := filepath.Join(dir, cleanScanID)
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return model.ScanResult{}, false, nil

@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -434,6 +436,66 @@ func TestStore_ListAssets(t *testing.T) {
 		}
 		if len(emptyAssets) != 0 {
 			t.Errorf("expected 0 assets for nonexistent target, got %d", len(emptyAssets))
+		}
+	}
+}
+
+func TestFileStore_TargetDirTraversalSanitization(t *testing.T) {
+	tempDir := t.TempDir()
+	fs := NewFileStore(tempDir)
+	defer fs.Close()
+
+	// 1. Inputs that must be rejected
+	rejectInputs := []string{
+		"",
+		"   ",
+		"..",
+		"../",
+		"..\\",
+		"....",
+		".",
+	}
+
+	for _, input := range rejectInputs {
+		dir, err := fs.targetDir(input)
+		if err == nil {
+			t.Errorf("targetDir(%q) expected error, got %q", input, dir)
+		}
+	}
+
+	// 2. Traversal inputs that are sanitized to safe subpaths inside tempDir
+	traversalInputs := []string{
+		"../../etc/passwd",
+		"target.onion/../../escape",
+		"target.onion/subpath",
+		"target.onion\\windows\\system32",
+	}
+
+	for _, input := range traversalInputs {
+		dir, err := fs.targetDir(input)
+		if err != nil {
+			// Rejecting is also safe
+			continue
+		}
+		cleanBase := filepath.Clean(tempDir)
+		rel, relErr := filepath.Rel(cleanBase, dir)
+		if relErr != nil || strings.HasPrefix(rel, "..") || rel == "." {
+			t.Errorf("targetDir(%q) escaped base dir: %s (rel: %s)", input, dir, rel)
+		}
+	}
+
+	// 3. Verify Save with traversal target fails or writes strictly within tempDir
+	saveTarget := model.ScanResult{
+		Target:    model.Target{Onion: "../../escaping"},
+		StartedAt: time.Now(),
+		EndedAt:   time.Now(),
+	}
+	savedPath, err := fs.Save(saveTarget)
+	if err == nil {
+		cleanBase := filepath.Clean(tempDir)
+		rel, relErr := filepath.Rel(cleanBase, savedPath)
+		if relErr != nil || strings.HasPrefix(rel, "..") {
+			t.Errorf("Save written outside tempDir: %s", savedPath)
 		}
 	}
 }
