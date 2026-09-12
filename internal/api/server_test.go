@@ -297,3 +297,212 @@ func TestCreateScan_TargetValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestAsyncScan_ConcurrencyLimitsAndQueue(t *testing.T) {
+	srv, store, _ := setupTestServer(t, "")
+	defer store.Close()
+
+	srv.MaxConcurrentScans = 2
+	srv.MaxQueueSize = 2
+
+	// Channel to control test server responses
+	proceed := make(chan struct{})
+	defer func() {
+		select {
+		case <-proceed:
+		default:
+			close(proceed)
+		}
+	}()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-proceed // block until signaled
+		w.Header().Set("Server", "nginx/1.18.0")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><body>Hello</body></html>`))
+	}))
+	defer ts.Close()
+
+	u, _ := url.Parse(ts.URL)
+	srv.TorClient = ts.Client()
+
+	// 1. Submit 2 scans -> both should start running immediately (MaxConcurrentScans = 2)
+	postScan := func() (int, map[string]interface{}) {
+		body, _ := json.Marshal(map[string]interface{}{
+			"target": u.Host,
+			"async":  true,
+		})
+		req := httptest.NewRequest(http.MethodPost, "/v1/scans", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+
+		var resp map[string]interface{}
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		return rec.Code, resp
+	}
+
+	code1, resp1 := postScan()
+	code2, resp2 := postScan()
+
+	if code1 != http.StatusAccepted || code2 != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted for first 2 scans, got %d and %d", code1, code2)
+	}
+
+	id1 := resp1["id"].(string)
+	id2 := resp2["id"].(string)
+
+	if resp1["status"] != "running" || resp2["status"] != "running" {
+		t.Errorf("expected both initial scans to be running, got %v and %v", resp1["status"], resp2["status"])
+	}
+
+	if active := srv.ActiveScans(); active != 2 {
+		t.Fatalf("expected 2 active scans, got %d", active)
+	}
+
+	// 2. Submit 2 more scans -> should be queued (MaxQueueSize = 2)
+	code3, resp3 := postScan()
+	code4, resp4 := postScan()
+
+	if code3 != http.StatusAccepted || code4 != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted for queued scans, got %d and %d", code3, code4)
+	}
+
+	id3 := resp3["id"].(string)
+	id4 := resp4["id"].(string)
+
+	if resp3["status"] != "queued" || resp4["status"] != "queued" {
+		t.Errorf("expected 3rd and 4th scans to be queued, got %v and %v", resp3["status"], resp4["status"])
+	}
+
+	if queued := srv.QueuedScans(); queued != 2 {
+		t.Fatalf("expected 2 queued scans, got %d", queued)
+	}
+
+	// 3. Submit 5th scan -> queue capacity exceeded, should return 429 Too Many Requests
+	code5, resp5 := postScan()
+	if code5 != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 Too Many Requests for 5th scan, got %d: %+v", code5, resp5)
+	}
+	errObj, _ := resp5["error"].(map[string]interface{})
+	if errObj["code"] != "TOO_MANY_REQUESTS" {
+		t.Errorf("expected error code TOO_MANY_REQUESTS, got %v", errObj["code"])
+	}
+
+	// 4. Verify querying GET /v1/scans/{id} reports status accurately
+	getScanStatus := func(id string) string {
+		req := httptest.NewRequest(http.MethodGet, "/v1/scans/"+id, nil)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 for GET /v1/scans/%s, got %d: %s", id, rec.Code, rec.Body.String())
+		}
+		var r map[string]interface{}
+		_ = json.Unmarshal(rec.Body.Bytes(), &r)
+		return r["status"].(string)
+	}
+
+	if st := getScanStatus(id1); st != "running" {
+		t.Errorf("expected scan %s status running, got %s", id1, st)
+	}
+	if st := getScanStatus(id3); st != "queued" {
+		t.Errorf("expected scan %s status queued, got %s", id3, st)
+	}
+
+	// 5. Release blocked HTTP requests to let scans complete
+	close(proceed)
+
+	// Wait for all 4 scans to complete
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if srv.ActiveScans() == 0 && srv.QueuedScans() == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if active := srv.ActiveScans(); active != 0 {
+		t.Errorf("expected 0 active scans after completion, got %d", active)
+	}
+	if queued := srv.QueuedScans(); queued != 0 {
+		t.Errorf("expected 0 queued scans after completion, got %d", queued)
+	}
+
+	// 6. Verify completed scans via GET /v1/scans/{id}
+	for _, id := range []string{id1, id2, id3, id4} {
+		st := getScanStatus(id)
+		if st != "completed" {
+			t.Errorf("expected scan %s status completed, got %s", id, st)
+		}
+	}
+}
+
+func TestAsyncScan_FailedScanStatus(t *testing.T) {
+	srv, store, _ := setupTestServer(t, "")
+	// Close store so scan.Run fails when attempting to persist the result
+	_ = store.Close()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "nginx/1.18.0")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><body>Hello</body></html>`))
+	}))
+	defer ts.Close()
+
+	u, _ := url.Parse(ts.URL)
+	srv.TorClient = ts.Client()
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"target": u.Host,
+		"async":  true,
+		"limits": map[string]interface{}{
+			"page_timeout": "100ms",
+			"total_budget": "500ms",
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/scans", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted, got %d", rec.Code)
+	}
+
+	var resp map[string]interface{}
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	id := resp["id"].(string)
+
+	// Wait for job to fail
+	deadline := time.Now().Add(3 * time.Second)
+	var finalStatus string
+	for time.Now().Before(deadline) {
+		job, ok := srv.GetJob(id)
+		if ok && (job.Status == ScanStatusFailed || job.Status == ScanStatusCompleted) {
+			finalStatus = string(job.Status)
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if finalStatus != "failed" {
+		t.Fatalf("expected scan to fail, got %s", finalStatus)
+	}
+
+	// Verify GET /v1/scans/{id} returns status "failed" and error message
+	reqGet := httptest.NewRequest(http.MethodGet, "/v1/scans/"+id, nil)
+	recGet := httptest.NewRecorder()
+	srv.ServeHTTP(recGet, reqGet)
+
+	if recGet.Code != http.StatusOK {
+		t.Fatalf("expected 200 for GET failed scan, got %d", recGet.Code)
+	}
+	var getResp map[string]interface{}
+	_ = json.Unmarshal(recGet.Body.Bytes(), &getResp)
+	if getResp["status"] != "failed" {
+		t.Errorf("expected status failed, got %v", getResp["status"])
+	}
+	if getResp["error"] == nil || getResp["error"] == "" {
+		t.Errorf("expected non-empty error message, got %v", getResp["error"])
+	}
+}

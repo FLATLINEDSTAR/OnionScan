@@ -25,12 +25,16 @@ func main() {
 	var socksAddr string
 	var apiKey string
 	var configPath string
+	var maxScans int
+	var maxQueue int
 
 	flag.StringVar(&addr, "addr", defaultAddr, "HTTP listen address")
 	flag.StringVar(&dbPath, "db", defaultDataDir(), "Path to SQLite database file")
 	flag.StringVar(&socksAddr, "socks", "127.0.0.1:9050", "Tor SOCKS5 proxy address")
 	flag.StringVar(&apiKey, "key", os.Getenv("ONIONSEC_API_KEY"), "Bearer auth token for API")
 	flag.StringVar(&configPath, "config", "", "Path to YAML config file")
+	flag.IntVar(&maxScans, "max-scans", 0, "Maximum concurrent active scans (default 4)")
+	flag.IntVar(&maxQueue, "max-queue", 0, "Maximum queued async scan jobs (default 32)")
 	flag.Parse()
 
 	cfg, err := config.LoadFile(configPath, configPath != "")
@@ -52,6 +56,16 @@ func main() {
 	torClient := tor.NewHTTPClient(cfg.SOCKSAddr, 30*time.Second)
 
 	server := api.NewServer(store, torClient, cfg.Limits, apiKey)
+	if maxScans > 0 {
+		server.MaxConcurrentScans = maxScans
+	} else if cfg.MaxConcurrentScans > 0 {
+		server.MaxConcurrentScans = cfg.MaxConcurrentScans
+	}
+	if maxQueue > 0 {
+		server.MaxQueueSize = maxQueue
+	} else if cfg.MaxQueueSize > 0 {
+		server.MaxQueueSize = cfg.MaxQueueSize
+	}
 
 	httpServer := &http.Server{
 		Addr:         addr,

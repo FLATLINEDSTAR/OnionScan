@@ -29,6 +29,8 @@ max_pages: 100 # custom page limit
 max_body_bytes: 10MB
 page_timeout: 15s
 total_budget: 3m
+max_concurrent_scans: 8
+max_queue_size: 64
 `
 	base := DefaultConfig()
 	cfg, err := Parse(strings.NewReader(yamlInput), base)
@@ -50,6 +52,12 @@ total_budget: 3m
 	}
 	if cfg.Limits.TotalBudget != 3*time.Minute {
 		t.Errorf("expected total budget 3m, got %v", cfg.Limits.TotalBudget)
+	}
+	if cfg.MaxConcurrentScans != 8 {
+		t.Errorf("expected max concurrent scans 8, got %d", cfg.MaxConcurrentScans)
+	}
+	if cfg.MaxQueueSize != 64 {
+		t.Errorf("expected max queue size 64, got %d", cfg.MaxQueueSize)
 	}
 }
 

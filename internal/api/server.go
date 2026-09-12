@@ -3,10 +3,12 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AryanXCode646/OnionScan/internal/crawler"
@@ -17,23 +19,61 @@ import (
 	"github.com/AryanXCode646/OnionScan/internal/storage"
 )
 
+// ErrQueueFull is returned when the asynchronous scan queue capacity is exceeded.
+var ErrQueueFull = errors.New("scan queue full")
+
+// ScanStatus describes the lifecycle state of a scan job.
+type ScanStatus string
+
+const (
+	ScanStatusQueued    ScanStatus = "queued"
+	ScanStatusRunning   ScanStatus = "running"
+	ScanStatusCompleted ScanStatus = "completed"
+	ScanStatusFailed    ScanStatus = "failed"
+)
+
+// ScanJob tracks the execution state and results for an asynchronous scan.
+type ScanJob struct {
+	ID        string            `json:"id"`
+	Target    string            `json:"target"`
+	Status    ScanStatus        `json:"status"`
+	CreatedAt time.Time         `json:"created_at"`
+	StartedAt *time.Time        `json:"started_at,omitempty"`
+	EndedAt   *time.Time        `json:"ended_at,omitempty"`
+	Error     string            `json:"error,omitempty"`
+	Result    *model.ScanResult `json:"result,omitempty"`
+
+	limits crawler.Limits
+	cancel context.CancelFunc
+}
+
 // Server provides the HTTP REST API server for OnionSec.
 type Server struct {
-	Store     storage.Store
-	TorClient *http.Client
-	Limits    crawler.Limits
-	AuthToken string
-	mux       *http.ServeMux
+	Store              storage.Store
+	TorClient          *http.Client
+	Limits             crawler.Limits
+	AuthToken          string
+	MaxConcurrentScans int
+	MaxQueueSize       int
+
+	mux         *http.ServeMux
+	mu          sync.Mutex
+	activeScans int
+	queuedJobs  []*ScanJob
+	jobs        map[string]*ScanJob
 }
 
 // NewServer initializes an API Server with all registered endpoints.
 func NewServer(store storage.Store, torClient *http.Client, limits crawler.Limits, authToken string) *Server {
 	s := &Server{
-		Store:     store,
-		TorClient: torClient,
-		Limits:    limits,
-		AuthToken: authToken,
-		mux:       http.NewServeMux(),
+		Store:              store,
+		TorClient:          torClient,
+		Limits:             limits,
+		AuthToken:          authToken,
+		MaxConcurrentScans: 4,
+		MaxQueueSize:       32,
+		mux:                http.NewServeMux(),
+		jobs:               make(map[string]*ScanJob),
 	}
 	s.registerRoutes()
 	return s
@@ -156,6 +196,143 @@ type scanCreatedResponse struct {
 	Findings      []model.Finding `json:"findings"`
 }
 
+// ActiveScans returns the count of currently running scans.
+func (s *Server) ActiveScans() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeScans
+}
+
+// QueuedScans returns the count of currently queued scans.
+func (s *Server) QueuedScans() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.queuedJobs)
+}
+
+// GetJob returns a copy of the scan job by ID if tracked in memory.
+func (s *Server) GetJob(id string) (*ScanJob, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[id]
+	if !ok {
+		return nil, false
+	}
+	jobCopy := *job
+	return &jobCopy, true
+}
+
+func (s *Server) enqueueAsyncScan(scanID, target string, limits crawler.Limits) (*ScanJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	maxConcurrent := s.MaxConcurrentScans
+	if maxConcurrent <= 0 {
+		maxConcurrent = 4
+	}
+	maxQueue := s.MaxQueueSize
+	if maxQueue <= 0 {
+		maxQueue = 32
+	}
+
+	if len(s.queuedJobs) >= maxQueue {
+		return nil, ErrQueueFull
+	}
+
+	if _, exists := s.jobs[scanID]; exists {
+		scanID = fmt.Sprintf("%s-%d", scanID, time.Now().UnixNano()%10000)
+	}
+
+	now := time.Now().UTC()
+	job := &ScanJob{
+		ID:        scanID,
+		Target:    target,
+		Status:    ScanStatusQueued,
+		CreatedAt: now,
+		limits:    limits,
+	}
+
+	s.pruneJobsLocked()
+	s.jobs[scanID] = job
+
+	if s.activeScans < maxConcurrent {
+		s.activeScans++
+		job.Status = ScanStatusRunning
+		startedAt := time.Now().UTC()
+		job.StartedAt = &startedAt
+		go s.executeJob(job)
+	} else {
+		s.queuedJobs = append(s.queuedJobs, job)
+	}
+
+	jobCopy := *job
+	return &jobCopy, nil
+}
+
+func (s *Server) executeJob(job *ScanJob) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.mu.Lock()
+			endedAt := time.Now().UTC()
+			job.EndedAt = &endedAt
+			job.Status = ScanStatusFailed
+			job.Error = fmt.Sprintf("panic: %v", r)
+			s.dispatchNextLocked()
+			s.mu.Unlock()
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), job.limits.TotalBudget+time.Minute)
+	s.mu.Lock()
+	job.cancel = cancel
+	s.mu.Unlock()
+	defer cancel()
+
+	target := model.Target{Onion: job.Target, CreatedAt: time.Now()}
+	result, err := scan.Run(ctx, s.TorClient, s.Store, target, job.limits)
+
+	s.mu.Lock()
+	endedAt := time.Now().UTC()
+	job.EndedAt = &endedAt
+	if err != nil {
+		job.Status = ScanStatusFailed
+		job.Error = err.Error()
+	} else {
+		job.Status = ScanStatusCompleted
+		job.Result = &result
+	}
+
+	s.dispatchNextLocked()
+	s.mu.Unlock()
+}
+
+func (s *Server) dispatchNextLocked() {
+	if len(s.queuedJobs) > 0 {
+		nextJob := s.queuedJobs[0]
+		s.queuedJobs = s.queuedJobs[1:]
+		nextJob.Status = ScanStatusRunning
+		startedAt := time.Now().UTC()
+		nextJob.StartedAt = &startedAt
+		go s.executeJob(nextJob)
+	} else {
+		s.activeScans--
+	}
+}
+
+func (s *Server) pruneJobsLocked() {
+	if len(s.jobs) <= 500 {
+		return
+	}
+	for id, j := range s.jobs {
+		if j.Status == ScanStatusCompleted || j.Status == ScanStatusFailed {
+			delete(s.jobs, id)
+			if len(s.jobs) <= 400 {
+				break
+			}
+		}
+	}
+}
+
 func (s *Server) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 	var req scanRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -191,17 +368,21 @@ func (s *Server) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 
 	if req.Async {
 		scanID := time.Now().UTC().Format("20060102T150405Z")
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), limits.TotalBudget+time.Minute)
-			defer cancel()
-			_, _ = scan.Run(ctx, s.TorClient, s.Store, model.Target{Onion: target, CreatedAt: time.Now()}, limits)
-		}()
+		job, err := s.enqueueAsyncScan(scanID, target, limits)
+		if err != nil {
+			if errors.Is(err, ErrQueueFull) {
+				writeJSONError(w, http.StatusTooManyRequests, "TOO_MANY_REQUESTS", "Scan queue capacity exceeded. Please retry later.")
+				return
+			}
+			writeJSONError(w, http.StatusInternalServerError, "QUEUE_ERROR", err.Error())
+			return
+		}
 
 		writeJSON(w, http.StatusAccepted, map[string]interface{}{
-			"id":         scanID,
-			"target":     target,
-			"status":     "queued",
-			"status_url": fmt.Sprintf("/v1/scans/%s?target=%s", scanID, target),
+			"id":         job.ID,
+			"target":     job.Target,
+			"status":     string(job.Status),
+			"status_url": fmt.Sprintf("/v1/scans/%s?target=%s", job.ID, job.Target),
 		})
 		return
 	}
@@ -216,6 +397,19 @@ func (s *Server) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	scanID := result.EndedAt.UTC().Format("20060102T150405Z")
+	s.mu.Lock()
+	s.pruneJobsLocked()
+	s.jobs[scanID] = &ScanJob{
+		ID:        scanID,
+		Target:    target,
+		Status:    ScanStatusCompleted,
+		CreatedAt: result.StartedAt,
+		StartedAt: &result.StartedAt,
+		EndedAt:   &result.EndedAt,
+		Result:    &result,
+	}
+	s.mu.Unlock()
+
 	writeJSON(w, http.StatusCreated, scanCreatedResponse{
 		ID:            scanID,
 		Target:        target,
@@ -229,32 +423,107 @@ func (s *Server) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type scanResponse struct {
+	model.ScanResult
+	ID     string `json:"id,omitempty"`
+	Status string `json:"status"`
+}
+
 func (s *Server) handleGetScan(w http.ResponseWriter, r *http.Request) {
 	scanID := r.PathValue("id")
 	target := r.URL.Query().Get("target")
 
+	// Check in-memory jobs first
+	s.mu.Lock()
+	job, jobFound := s.jobs[scanID]
+	var jobCopy ScanJob
+	if jobFound {
+		jobCopy = *job
+	}
+	s.mu.Unlock()
+
+	if jobFound {
+		if jobCopy.Status == ScanStatusQueued || jobCopy.Status == ScanStatusRunning {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"id":         jobCopy.ID,
+				"target":     jobCopy.Target,
+				"status":     string(jobCopy.Status),
+				"created_at": jobCopy.CreatedAt,
+				"started_at": jobCopy.StartedAt,
+			})
+			return
+		}
+
+		if jobCopy.Status == ScanStatusFailed {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"id":         jobCopy.ID,
+				"target":     jobCopy.Target,
+				"status":     string(jobCopy.Status),
+				"created_at": jobCopy.CreatedAt,
+				"started_at": jobCopy.StartedAt,
+				"ended_at":   jobCopy.EndedAt,
+				"error":      jobCopy.Error,
+			})
+			return
+		}
+
+		if jobCopy.Status == ScanStatusCompleted {
+			if s.Store != nil {
+				res, ok, err := s.Store.GetScan(jobCopy.Target, scanID)
+				if err == nil && ok {
+					writeJSON(w, http.StatusOK, scanResponse{
+						ScanResult: res,
+						ID:         scanID,
+						Status:     "completed",
+					})
+					return
+				}
+			}
+			if jobCopy.Result != nil {
+				writeJSON(w, http.StatusOK, scanResponse{
+					ScanResult: *jobCopy.Result,
+					ID:         scanID,
+					Status:     "completed",
+				})
+				return
+			}
+		}
+	}
+
 	if target != "" {
-		res, ok, err := s.Store.GetScan(target, scanID)
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error())
-			return
+		if s.Store != nil {
+			res, ok, err := s.Store.GetScan(target, scanID)
+			if err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error())
+				return
+			}
+			if ok {
+				writeJSON(w, http.StatusOK, scanResponse{
+					ScanResult: res,
+					ID:         scanID,
+					Status:     "completed",
+				})
+				return
+			}
 		}
-		if !ok {
-			writeJSONError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("Scan %q not found for target %q", scanID, target))
-			return
-		}
-		writeJSON(w, http.StatusOK, res)
+		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("Scan %q not found for target %q", scanID, target))
 		return
 	}
 
 	// Search across targets if target not explicitly passed
-	targets, err := s.Store.Targets()
-	if err == nil {
-		for _, t := range targets {
-			res, ok, err := s.Store.GetScan(t, scanID)
-			if err == nil && ok {
-				writeJSON(w, http.StatusOK, res)
-				return
+	if s.Store != nil {
+		targets, err := s.Store.Targets()
+		if err == nil {
+			for _, t := range targets {
+				res, ok, err := s.Store.GetScan(t, scanID)
+				if err == nil && ok {
+					writeJSON(w, http.StatusOK, scanResponse{
+						ScanResult: res,
+						ID:         scanID,
+						Status:     "completed",
+					})
+					return
+				}
 			}
 		}
 	}

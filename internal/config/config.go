@@ -17,15 +17,19 @@ import (
 
 // Config holds runtime options for OnionSec scanning.
 type Config struct {
-	SOCKSAddr string
-	Limits    crawler.Limits
+	SOCKSAddr          string
+	Limits             crawler.Limits
+	MaxConcurrentScans int
+	MaxQueueSize       int
 }
 
 // DefaultConfig returns the baseline configuration with crawler and tor defaults.
 func DefaultConfig() Config {
 	return Config{
-		SOCKSAddr: tor.DefaultSOCKSAddr,
-		Limits:    crawler.DefaultLimits,
+		SOCKSAddr:          tor.DefaultSOCKSAddr,
+		Limits:             crawler.DefaultLimits,
+		MaxConcurrentScans: 4,
+		MaxQueueSize:       32,
 	}
 }
 
@@ -118,6 +122,20 @@ func Parse(r io.Reader, base Config) (Config, error) {
 				return base, fmt.Errorf("line %d: invalid duration for %s: %w", lineNum, key, err)
 			}
 			base.Limits.TotalBudget = d
+
+		case "max_concurrent_scans", "max_concurrency", "max_scans":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return base, fmt.Errorf("line %d: invalid integer for %s: %w", lineNum, key, err)
+			}
+			base.MaxConcurrentScans = n
+
+		case "max_queue_size", "max_queue":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return base, fmt.Errorf("line %d: invalid integer for %s: %w", lineNum, key, err)
+			}
+			base.MaxQueueSize = n
 
 		default:
 			// Unknown key: ignore to allow forward compatibility
