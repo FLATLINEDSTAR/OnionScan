@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/AryanXCode646/OnionScan/internal/analyzer"
+	"github.com/AryanXCode646/OnionScan/internal/analyzer/external"
 	"github.com/AryanXCode646/OnionScan/internal/analyzer/fingerprint"
 	"github.com/AryanXCode646/OnionScan/internal/analyzer/headers"
 	"github.com/AryanXCode646/OnionScan/internal/analyzer/jsanalysis"
@@ -33,6 +34,7 @@ func DefaultRegistry() *analyzer.Registry {
 	r.Register(tls.New())
 	r.Register(robots.New())
 	r.Register(jsanalysis.New())
+	r.Register(external.New())
 	return r
 }
 

@@ -28,12 +28,13 @@ grouped by prefix:
 | OPSEC-004 | Debug/admin endpoint exposed | Low | robots |
 | SEC-003 | JavaScript source map reference disclosed | Low | jsanalysis |
 | OPSEC-009 | Build environment or local file paths disclosed in JavaScript | Low | jsanalysis |
+| OPSEC-001 | External analytics/tracking script detected | Medium | external |
+| INFRA-003 | External resources referenced in page content | Info | external |
 
 ## Planned (see docs/ROADMAP.md Phase 2/3 and the issue tracker)
 
 | ID | Title |
 |---|---|
-| OPSEC-001 | External analytics/tracking script detected |
 | OPSEC-003 | Public EXIF metadata in uploaded images |
 | OPSEC-008 | Cloud provider metadata endpoint reference |
 | CRED-001 | API key or token pattern in page content or JS |
