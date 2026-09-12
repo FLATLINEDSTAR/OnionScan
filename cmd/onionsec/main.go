@@ -16,9 +16,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
-	"github.com/AryanXCode646/OnionScan/internal/crawler"
+	"github.com/AryanXCode646/OnionScan/internal/config"
 	"github.com/AryanXCode646/OnionScan/internal/model"
 	"github.com/AryanXCode646/OnionScan/internal/report"
 	"github.com/AryanXCode646/OnionScan/internal/scan"
@@ -55,26 +56,59 @@ func usage() {
 Only scan targets you own or are authorized to test.
 
 Usage:
-  onionsec scan <target.onion>
+  onionsec scan <target.onion> [--config <path>]
   onionsec report <target.onion>
   onionsec monitor <target.onion>
   onionsec version`)
 }
 
 func cmdScan(args []string) {
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: onionsec scan <target.onion>")
+	var targetOnion string
+	var configPath string
+	var explicitConfig bool
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--config" || arg == "-config" {
+			if i+1 < len(args) {
+				configPath = args[i+1]
+				explicitConfig = true
+				i++
+			} else {
+				fmt.Fprintln(os.Stderr, "error: --config requires a path argument")
+				os.Exit(1)
+			}
+		} else if strings.HasPrefix(arg, "--config=") || strings.HasPrefix(arg, "-config=") {
+			parts := strings.SplitN(arg, "=", 2)
+			configPath = parts[1]
+			explicitConfig = true
+		} else if strings.HasPrefix(arg, "-") {
+			// other flags will be handled in subsequent issues
+		} else if targetOnion == "" {
+			targetOnion = arg
+		}
+	}
+
+	if targetOnion == "" {
+		fmt.Fprintln(os.Stderr, "usage: onionsec scan <target.onion> [--config <path>]")
 		os.Exit(1)
 	}
-	target := model.Target{Onion: args[0], CreatedAt: time.Now()}
 
-	client := tor.NewHTTPClient(tor.DefaultSOCKSAddr, 30*time.Second)
+	cfg, err := config.LoadFile(configPath, explicitConfig)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config error:", err)
+		os.Exit(1)
+	}
+
+	target := model.Target{Onion: targetOnion, CreatedAt: time.Now()}
+
+	client := tor.NewHTTPClient(cfg.SOCKSAddr, 30*time.Second)
 	store := storage.New(defaultDataDir())
 
-	ctx, cancel := context.WithTimeout(context.Background(), crawler.DefaultLimits.TotalBudget+time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Limits.TotalBudget+time.Minute)
 	defer cancel()
 
-	result, err := scan.Run(ctx, client, store, target, crawler.DefaultLimits)
+	result, err := scan.Run(ctx, client, store, target, cfg.Limits)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "scan failed:", err)
 		os.Exit(1)
