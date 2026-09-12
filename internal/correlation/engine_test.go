@@ -206,3 +206,71 @@ func TestCorrelateWithStore_NoPeerMatches_NoInfra004(t *testing.T) {
 		}
 	}
 }
+
+func TestWeightedConfidence(t *testing.T) {
+	tests := []struct {
+		name     string
+		weights  []float64
+		expected float64
+	}{
+		{"empty", nil, 0.0},
+		{"single IP", []float64{0.40}, 0.40},
+		{"IP and Fingerprint", []float64{0.40, 0.50}, 0.70},
+		{"IP, Fingerprint, and TLS", []float64{0.40, 0.50, 0.60}, 0.88},
+		{"High corroboration", []float64{0.40, 0.50, 0.60, 0.50}, 0.94},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := WeightedConfidence(tt.weights)
+			if got != tt.expected {
+				t.Errorf("WeightedConfidence(%v) = %f, want %f", tt.weights, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCorrelate_WeightedConfidenceScaling(t *testing.T) {
+	target := model.Target{Onion: "test.onion"}
+	ipEv := model.Evidence{Type: model.EvidenceIP, Description: "93.184.216.34", Source: "http://test.onion/"}
+	fpEv := model.Evidence{Type: model.EvidenceFingerprint, Description: "abcdef1234567890", Source: "http://test.onion/"}
+	tlsEv := model.Evidence{Type: model.EvidenceTLS, Description: "cert-hash-12345", Source: "http://test.onion/"}
+
+	findingsBase := []model.Finding{
+		{ID: "INFRA-001", Analyzer: "opsec", Evidence: []model.Evidence{ipEv}},
+		{ID: "FP-001", Analyzer: "fingerprint", Evidence: []model.Evidence{fpEv}},
+	}
+
+	resBase := Correlate(target, findingsBase)
+	var confBase float64
+	for _, f := range resBase {
+		if f.ID == "INFRA-002" {
+			confBase = f.Confidence
+		}
+	}
+	if confBase != 0.70 {
+		t.Fatalf("expected baseline confidence 0.70, got %f", confBase)
+	}
+
+	// Add corroborating TLS evidence
+	findingsWithTLS := append(findingsBase, model.Finding{
+		ID:       "SEC-001",
+		Analyzer: "tls",
+		Evidence: []model.Evidence{tlsEv},
+	})
+
+	resWithTLS := Correlate(target, findingsWithTLS)
+	var confWithTLS float64
+	for _, f := range resWithTLS {
+		if f.ID == "INFRA-002" {
+			confWithTLS = f.Confidence
+		}
+	}
+
+	if confWithTLS <= confBase {
+		t.Errorf("expected corroborating TLS evidence to increase confidence (%f <= %f)", confWithTLS, confBase)
+	}
+	if confWithTLS != 0.88 {
+		t.Errorf("expected confidence 0.88 with IP+FP+TLS, got %f", confWithTLS)
+	}
+}

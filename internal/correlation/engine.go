@@ -6,12 +6,61 @@ package correlation
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
 	"github.com/AryanXCode646/OnionScan/internal/model"
 	"github.com/AryanXCode646/OnionScan/internal/storage"
 )
+
+// DefaultWeights defines baseline independence weights for corroborating evidence types.
+var DefaultWeights = map[model.EvidenceType]float64{
+	model.EvidenceIP:          0.40,
+	model.EvidenceFingerprint: 0.50,
+	model.EvidenceTLS:         0.60,
+	model.EvidenceHostname:    0.50,
+	model.EvidenceExternalRes: 0.35,
+	model.EvidenceEmail:       0.30,
+	model.EvidenceMetadata:    0.30,
+}
+
+// EvidenceWeight returns the independence weight for an evidence type.
+func EvidenceWeight(t model.EvidenceType) float64 {
+	if w, ok := DefaultWeights[t]; ok {
+		return w
+	}
+	return 0.25
+}
+
+// WeightedConfidence calculates the combined confidence from multiple independent evidence pieces:
+//
+//	C = 1 - \prod_{i=1}^n (1 - w_i)
+//
+// The result is rounded to 2 decimal places and bounded in [0.0, 0.99].
+func WeightedConfidence(weights []float64) float64 {
+	if len(weights) == 0 {
+		return 0.0
+	}
+	product := 1.0
+	for _, w := range weights {
+		if w <= 0.0 {
+			continue
+		}
+		if w >= 1.0 {
+			w = 0.99
+		}
+		product *= (1.0 - w)
+	}
+	conf := 1.0 - product
+	if conf > 0.99 {
+		conf = 0.99
+	}
+	if conf < 0.0 {
+		conf = 0.0
+	}
+	return math.Round(conf*100) / 100
+}
 
 // StoreReader is queried by correlation to find historical co-occurrences of evidence across targets.
 type StoreReader interface {
@@ -24,12 +73,14 @@ func Correlate(target model.Target, findings []model.Finding) []model.Finding {
 }
 
 // CorrelateWithStore inspects findings from the current scan, performs same-scan
-// correlation, and checks newly-collected evidence against the persistent store
-// for cross-target correlation.
+// correlation using a weighted confidence model, and checks newly-collected evidence
+// against the persistent store for cross-target correlation.
 func CorrelateWithStore(target model.Target, findings []model.Finding, store StoreReader) []model.Finding {
 	hasIP := false
 	hasFingerprint := false
 	var ipEvidence []model.Evidence
+	var corroboratingEvidence []model.Evidence
+	corroboratingTypes := make(map[model.EvidenceType]bool)
 
 	for _, f := range findings {
 		for _, e := range f.Evidence {
@@ -39,21 +90,36 @@ func CorrelateWithStore(target model.Target, findings []model.Finding, store Sto
 				ipEvidence = append(ipEvidence, e)
 			case model.EvidenceFingerprint:
 				hasFingerprint = true
+				corroboratingTypes[e.Type] = true
+				corroboratingEvidence = append(corroboratingEvidence, e)
+			case model.EvidenceTLS, model.EvidenceHostname:
+				corroboratingTypes[e.Type] = true
+				corroboratingEvidence = append(corroboratingEvidence, e)
 			}
 		}
 	}
 
 	// 1. Same-scan correlation: IP + Fingerprint co-occurrence (INFRA-002)
+	// Confidence scales with the number and independence of corroborating evidence types.
 	if hasIP && hasFingerprint {
+		weights := []float64{EvidenceWeight(model.EvidenceIP)}
+		for t := range corroboratingTypes {
+			weights = append(weights, EvidenceWeight(t))
+		}
+		confidence := WeightedConfidence(weights)
+
+		allEv := append(ipEvidence, corroboratingEvidence...)
+		allEv = dedupeEvidence(allEv)
+
 		findings = append(findings, model.Finding{
 			ID:             "INFRA-002",
 			Title:          "Possible origin infrastructure disclosure (correlated)",
 			Severity:       model.SeverityHigh,
-			Confidence:     0.7,
+			Confidence:     confidence,
 			Target:         target.Onion,
 			Analyzer:       "correlation",
 			Evidence:       ipEvidence,
-			Explanation:    "A referenced IP address co-occurred with a recorded response fingerprint in the same scan. This raises confidence above a standalone IP mention, but should still be manually verified before treating it as a confirmed leak.",
+			Explanation:    "A referenced IP address co-occurred with independent response fingerprints or certificates in the same scan. Corroborating evidence across independent channels raises confidence, but should still be manually verified before treating as a confirmed leak.",
 			Recommendation: "Manually verify whether the referenced address is reachable and serves the same content as this onion service.",
 			CreatedAt:      time.Now(),
 		})
@@ -66,6 +132,8 @@ func CorrelateWithStore(target model.Target, findings []model.Finding, store Sto
 			val    string
 		}
 		seenKeys := make(map[evKey]bool)
+		peerTargets := make(map[string]bool)
+		sharedTypes := make(map[model.EvidenceType]bool)
 		var crossEvidence []model.Evidence
 
 		for _, f := range findings {
@@ -96,6 +164,8 @@ func CorrelateWithStore(target model.Target, findings []model.Finding, store Sto
 
 				for _, p := range peers {
 					if p.Onion != "" && !strings.EqualFold(p.Onion, target.Onion) {
+						peerTargets[p.Onion] = true
+						sharedTypes[e.Type] = true
 						desc := fmt.Sprintf("Shared %s (%s) also observed on target %s", e.Type, e.Description, p.Onion)
 						crossEvidence = append(crossEvidence, model.Evidence{
 							Type:        e.Type,
@@ -109,11 +179,28 @@ func CorrelateWithStore(target model.Target, findings []model.Finding, store Sto
 
 		if len(crossEvidence) > 0 {
 			crossEvidence = dedupeEvidence(crossEvidence)
+
+			// Weighted confidence for cross-target correlation:
+			// Base peer correlation weight (0.50) + weight per shared evidence type + extra weight per peer
+			weights := []float64{0.50}
+			for t := range sharedTypes {
+				weights = append(weights, EvidenceWeight(t))
+			}
+			if len(peerTargets) > 1 {
+				for i := 1; i < len(peerTargets); i++ {
+					weights = append(weights, 0.20)
+				}
+			}
+			crossConf := WeightedConfidence(weights)
+			if crossConf < 0.75 {
+				crossConf = 0.75
+			}
+
 			findings = append(findings, model.Finding{
 				ID:             "INFRA-004",
 				Title:          "Shared infrastructure or identity correlated across multiple targets",
 				Severity:       model.SeverityHigh,
-				Confidence:     0.85,
+				Confidence:     crossConf,
 				Target:         target.Onion,
 				Analyzer:       "correlation",
 				Evidence:       crossEvidence,
