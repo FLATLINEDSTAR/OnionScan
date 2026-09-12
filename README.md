@@ -31,8 +31,11 @@ the [issue tracker](../../issues) for what's built vs. planned.
 
 ## Quick start
 
-Requires Go 1.22+ and a running Tor daemon (`tor` package, default
-SOCKS port `9050`).
+### Prerequisites & Build Requirements
+
+- **Go**: 1.22+
+- **C Compiler (CGO)**: SQLite persistence uses `github.com/mattn/go-sqlite3`, requiring `CGO_ENABLED=1` and a standard C compiler (`gcc` or `clang`, installed via `build-essential` on Debian/Ubuntu or `xcode-select` on macOS).
+- **Tor Daemon**: A running Tor daemon (default SOCKS5 port `127.0.0.1:9050`).
 
 ```bash
 go build -o onionsec ./cmd/onionsec
@@ -42,9 +45,15 @@ go build -o onionsec ./cmd/onionsec
 
 # re-render the last saved report
 ./onionsec report youronionaddresshere.onion
+
+# monitor changes against past scans
+./onionsec monitor youronionaddresshere.onion
+
+# generate evidence correlation graph (ASCII or DOT)
+./onionsec graph youronionaddresshere.onion
 ```
 
-Scan history is written to `~/.onionsec/scans/<target>/`.
+Scan history and relational evidence indexing are persisted in a local SQLite database at `~/.onionsec/onionsec.db`.
 
 ## How it works
 

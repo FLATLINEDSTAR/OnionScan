@@ -27,7 +27,7 @@ type Graph struct {
 }
 
 // BuildGraph constructs an evidence graph for target using the scan history and evidence index in store.
-func BuildGraph(targetOnion string, store *storage.Store) (*Graph, error) {
+func BuildGraph(targetOnion string, store storage.Store) (*Graph, error) {
 	if store == nil {
 		return nil, fmt.Errorf("store is required to build evidence graph")
 	}

@@ -130,7 +130,12 @@ func cmdScan(args []string) {
 	target := model.Target{Onion: targetOnion, CreatedAt: time.Now()}
 
 	client := tor.NewHTTPClient(cfg.SOCKSAddr, 30*time.Second)
-	store := storage.New(defaultDataDir())
+	store, err := storage.New(defaultDataDir())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "storage error:", err)
+		os.Exit(1)
+	}
+	defer store.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Limits.TotalBudget+time.Minute)
 	defer cancel()
@@ -179,7 +184,12 @@ func cmdReport(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: onionsec report <target.onion>")
 		os.Exit(1)
 	}
-	store := storage.New(defaultDataDir())
+	store, err := storage.New(defaultDataDir())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "storage error:", err)
+		os.Exit(1)
+	}
+	defer store.Close()
 	result, ok, err := store.Latest(args[0])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "read history:", err)
@@ -222,7 +232,12 @@ func cmdGraph(args []string) {
 		os.Exit(1)
 	}
 
-	store := storage.New(defaultDataDir())
+	store, err := storage.New(defaultDataDir())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "storage error:", err)
+		os.Exit(1)
+	}
+	defer store.Close()
 	g, err := graph.BuildGraph(targetOnion, store)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "graph error:", err)
@@ -314,7 +329,12 @@ func cmdMonitor(args []string) {
 	}
 
 	target := model.Target{Onion: targetOnion, CreatedAt: time.Now()}
-	store := storage.New(defaultDataDir())
+	store, err := storage.New(defaultDataDir())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "storage error:", err)
+		os.Exit(1)
+	}
+	defer store.Close()
 
 	// 1. Retrieve the latest prior scan before running the new scan
 	oldScan, hasOld, err := store.Latest(targetOnion)
@@ -381,7 +401,7 @@ func printSummary(r model.ScanResult) {
 func defaultDataDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ".onionsec"
+		return ".onionsec/onionsec.db"
 	}
-	return home + "/.onionsec/scans"
+	return home + "/.onionsec/onionsec.db"
 }

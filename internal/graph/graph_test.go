@@ -12,9 +12,13 @@ import (
 
 func TestBuildGraph_NoHistory(t *testing.T) {
 	tempDir := t.TempDir()
-	store := storage.New(tempDir)
+	store, err := storage.New(tempDir)
+	if err != nil {
+		t.Fatalf("storage.New failed: %v", err)
+	}
+	defer store.Close()
 
-	_, err := BuildGraph("unknown.onion", store)
+	_, err = BuildGraph("unknown.onion", store)
 	if err == nil {
 		t.Fatalf("expected error when building graph for target with no history, got nil")
 	}
@@ -22,7 +26,11 @@ func TestBuildGraph_NoHistory(t *testing.T) {
 
 func TestBuildGraph_AndRender(t *testing.T) {
 	tempDir := t.TempDir()
-	store := storage.New(tempDir)
+	store, err := storage.New(tempDir)
+	if err != nil {
+		t.Fatalf("storage.New failed: %v", err)
+	}
+	defer store.Close()
 
 	targetA := "service-alpha.onion"
 	targetB := "service-beta.onion"

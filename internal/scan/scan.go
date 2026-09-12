@@ -46,7 +46,7 @@ func DefaultRegistry() *analyzer.Registry {
 
 // Run performs a full scan of target using client for HTTP fetches
 // (normally Tor-routed) and persists the result via store.
-func Run(ctx context.Context, client *http.Client, store *storage.Store, target model.Target, limits crawler.Limits) (model.ScanResult, error) {
+func Run(ctx context.Context, client *http.Client, store storage.Store, target model.Target, limits crawler.Limits) (model.ScanResult, error) {
 	started := time.Now()
 
 	pages, err := crawler.Crawl(ctx, client, target, limits)

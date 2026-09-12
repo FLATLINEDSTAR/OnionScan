@@ -9,7 +9,11 @@ import (
 
 func TestStore_SaveAndLatestRoundTrip(t *testing.T) {
 	tempDir := t.TempDir()
-	store := New(tempDir)
+	store, err := New(tempDir)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer store.Close()
 
 	onion := "testtarget.onion"
 	now := time.Date(2026, 9, 12, 8, 30, 0, 0, time.UTC)
@@ -66,7 +70,11 @@ func TestStore_SaveAndLatestRoundTrip(t *testing.T) {
 
 func TestStore_HistoryOrdering(t *testing.T) {
 	tempDir := t.TempDir()
-	store := New(tempDir)
+	store, err := New(tempDir)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer store.Close()
 	onion := "timeline.onion"
 
 	t1 := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
@@ -119,7 +127,11 @@ func TestStore_HistoryOrdering(t *testing.T) {
 
 func TestStore_NonExistentTarget(t *testing.T) {
 	tempDir := t.TempDir()
-	store := New(tempDir)
+	store, err := New(tempDir)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer store.Close()
 
 	latest, ok, err := store.Latest("nonexistent.onion")
 	if err != nil {
@@ -140,7 +152,11 @@ func TestStore_NonExistentTarget(t *testing.T) {
 
 func TestStore_EvidenceIndexingAndLookup(t *testing.T) {
 	tempDir := t.TempDir()
-	store := New(tempDir)
+	store, err := New(tempDir)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer store.Close()
 
 	target1 := "alpha.onion"
 	target2 := "beta.onion"
@@ -220,5 +236,115 @@ func TestStore_EvidenceIndexingAndLookup(t *testing.T) {
 	}
 	if len(targets) != 2 || targets[0] != "alpha.onion" || targets[1] != "beta.onion" {
 		t.Fatalf("expected [alpha.onion beta.onion], got %+v", targets)
+	}
+}
+
+func TestFileStore_SaveAndRetrieve(t *testing.T) {
+	tempDir := t.TempDir()
+	fs := NewFileStore(tempDir)
+	defer fs.Close()
+
+	onion := "filestore.onion"
+	res := model.ScanResult{
+		Target:    model.Target{Onion: onion},
+		StartedAt: time.Now().Add(-time.Minute),
+		EndedAt:   time.Now(),
+		RiskScore: 15,
+	}
+
+	path, err := fs.Save(res)
+	if err != nil {
+		t.Fatalf("FileStore.Save failed: %v", err)
+	}
+	if path == "" {
+		t.Errorf("expected non-empty path from Save")
+	}
+
+	latest, ok, err := fs.Latest(onion)
+	if err != nil || !ok {
+		t.Fatalf("FileStore.Latest failed: %v, ok=%v", err, ok)
+	}
+	if latest.RiskScore != 15 {
+		t.Errorf("expected risk score 15, got %d", latest.RiskScore)
+	}
+}
+
+func TestSQLiteStore_InMemory(t *testing.T) {
+	store, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatalf("OpenSQLite(:memory:) failed: %v", err)
+	}
+	defer store.Close()
+
+	onion := "memory.onion"
+	res := model.ScanResult{
+		Target:    model.Target{Onion: onion},
+		StartedAt: time.Now().Add(-time.Minute),
+		EndedAt:   time.Now(),
+		RiskScore: 88,
+	}
+
+	scanID, err := store.Save(res)
+	if err != nil {
+		t.Fatalf("Save in memory failed: %v", err)
+	}
+	if scanID == "" {
+		t.Errorf("expected non-empty scanID")
+	}
+
+	latest, ok, err := store.Latest(onion)
+	if err != nil || !ok {
+		t.Fatalf("Latest in memory failed: %v, ok=%v", err, ok)
+	}
+	if latest.RiskScore != 88 {
+		t.Errorf("expected risk score 88, got %d", latest.RiskScore)
+	}
+}
+
+func TestStore_GetScan(t *testing.T) {
+	tempDir := t.TempDir()
+	sqliteStore, err := New(tempDir)
+	if err != nil {
+		t.Fatalf("New sqlite store failed: %v", err)
+	}
+	defer sqliteStore.Close()
+
+	fileStore := NewFileStore(tempDir + "_file")
+	defer fileStore.Close()
+
+	onion := "getscan.onion"
+	now := time.Date(2026, 9, 12, 12, 30, 0, 0, time.UTC)
+	res := model.ScanResult{
+		Target:    model.Target{Onion: onion},
+		StartedAt: now.Add(-time.Minute),
+		EndedAt:   now,
+		RiskScore: 77,
+	}
+
+	for _, s := range []Store{sqliteStore, fileStore} {
+		_, err := s.Save(res)
+		if err != nil {
+			t.Fatalf("Save failed: %v", err)
+		}
+
+		scanID := "20260912T123000Z"
+		retrieved, ok, err := s.GetScan(onion, scanID)
+		if err != nil {
+			t.Fatalf("GetScan failed: %v", err)
+		}
+		if !ok {
+			t.Fatalf("GetScan returned ok=false for existing scan")
+		}
+		if retrieved.RiskScore != 77 {
+			t.Errorf("expected risk score 77, got %d", retrieved.RiskScore)
+		}
+
+		_, missingOk, err := s.GetScan(onion, "nonexistent-scan-id")
+		if err != nil {
+			t.Fatalf("GetScan error on missing scan: %v", err)
+		}
+		if missingOk {
+			t.Errorf("expected missingOk=false for nonexistent scan")
+		}
 	}
 }
