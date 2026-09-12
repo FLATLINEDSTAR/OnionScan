@@ -8,6 +8,7 @@ package tor
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -26,6 +27,9 @@ const (
 // proxy at proxyAddr ("host:port"), suitable for reaching .onion hosts via
 // a local Tor daemon. Callers should wire this into http.Transport.DialContext.
 func DialContext(ctx context.Context, proxyAddr, targetAddr string) (net.Conn, error) {
+	if proxyAddr == "" {
+		proxyAddr = DefaultSOCKSAddr
+	}
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", proxyAddr)
 	if err != nil {
@@ -54,6 +58,40 @@ func DialContext(ctx context.Context, proxyAddr, targetAddr string) (net.Conn, e
 	}
 
 	return conn, nil
+}
+
+// DialTLSContext connects to targetAddr ("host:port") through the SOCKS5
+// proxy at proxyAddr ("host:port"), then initiates a TLS handshake with
+// targetAddr using the provided config. If config is nil, a default config
+// with InsecureSkipVerify: true and ServerName set to target hostname is used.
+func DialTLSContext(ctx context.Context, proxyAddr, targetAddr string, config *tls.Config) (*tls.Conn, error) {
+	conn, err := DialContext(ctx, proxyAddr, targetAddr)
+	if err != nil {
+		return nil, fmt.Errorf("connect to tor proxy %s for tls: %w", proxyAddr, err)
+	}
+
+	host, _, err := net.SplitHostPort(targetAddr)
+	if err != nil {
+		host = targetAddr
+	}
+
+	if config == nil {
+		config = &tls.Config{
+			InsecureSkipVerify: true,
+			ServerName:         host,
+		}
+	} else if config.ServerName == "" {
+		config = config.Clone()
+		config.ServerName = host
+	}
+
+	tlsConn := tls.Client(conn, config)
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("tls handshake with %s via tor proxy %s: %w", targetAddr, proxyAddr, err)
+	}
+
+	return tlsConn, nil
 }
 
 func handshake(conn net.Conn) error {

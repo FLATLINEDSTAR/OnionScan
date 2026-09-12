@@ -6,6 +6,7 @@ package scan
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"time"
 
@@ -27,20 +28,45 @@ import (
 	"github.com/AryanXCode646/OnionScan/internal/storage"
 )
 
-// DefaultRegistry returns the analyzer set every `onionsec scan` run uses.
-// Community-contributed analyzers register here -- see CONTRIBUTING.md.
+// DefaultRegistry returns the default analyzer set.
 func DefaultRegistry() *analyzer.Registry {
+	return NewRegistryWithClient(nil)
+}
+
+// NewRegistryWithClient returns an analyzer registry with network-fetching
+// analyzers (tls, robots, metadata) configured to route traffic through the
+// provided HTTP client and its underlying dialer.
+func NewRegistryWithClient(client *http.Client) *analyzer.Registry {
 	r := analyzer.NewRegistry()
 	r.Register(headers.New())
 	r.Register(opsec.New())
 	r.Register(fingerprint.New())
-	r.Register(tls.New())
-	r.Register(robots.New())
+
+	var dialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+	if client != nil {
+		if tr, ok := client.Transport.(*http.Transport); ok && tr.DialContext != nil {
+			dialContext = tr.DialContext
+		}
+	}
+
+	if dialContext != nil {
+		r.Register(tls.NewWithDialContext(dialContext))
+	} else {
+		r.Register(tls.New())
+	}
+
+	if client != nil {
+		r.Register(robots.NewWithClient(client))
+		r.Register(metadata.NewWithClient(client))
+	} else {
+		r.Register(robots.New())
+		r.Register(metadata.New())
+	}
+
 	r.Register(jsanalysis.New())
 	r.Register(external.New())
 	r.Register(apidetect.New())
 	r.Register(credentials.New())
-	r.Register(metadata.New())
 	return r
 }
 
@@ -54,7 +80,7 @@ func Run(ctx context.Context, client *http.Client, store storage.Store, target m
 		return model.ScanResult{}, err
 	}
 
-	reg := DefaultRegistry()
+	reg := NewRegistryWithClient(client)
 	var findings []model.Finding
 	for _, page := range pages {
 		for _, a := range reg.All() {

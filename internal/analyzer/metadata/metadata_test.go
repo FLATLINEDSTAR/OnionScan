@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -327,5 +329,45 @@ func TestMetadataAnalyzer_TrueNegatives(t *testing.T) {
 
 	if len(findings2) != 0 {
 		t.Errorf("expected 0 findings for clean HTML, got %d", len(findings2))
+	}
+}
+
+func TestMetadataAnalyzer_TorClientInvoked(t *testing.T) {
+	tiffData := buildTestTIFF(true)
+	jpegBytes := buildTestJPEG(tiffData)
+
+	var requestReceived bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestReceived = true
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.WriteHeader(http.StatusOK)
+		w.Write(jpegBytes)
+	}))
+	defer ts.Close()
+
+	client := ts.Client()
+	a := NewWithClient(client)
+
+	host := strings.TrimPrefix(ts.URL, "http://")
+	target := model.Target{Onion: host}
+	html := fmt.Sprintf(`<html><body><img src="%s/image.jpg"></body></html>`, ts.URL)
+	page := model.Page{
+		URL:        ts.URL + "/",
+		StatusCode: 200,
+		Headers:    map[string]string{"Content-Type": "text/html"},
+		Body:       []byte(html),
+	}
+
+	findings, err := a.Analyze(context.Background(), target, page)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+
+	if !requestReceived {
+		t.Errorf("expected custom Tor client to be invoked")
+	}
+
+	if len(findings) == 0 {
+		t.Errorf("expected OPSEC-003 finding from fetched image, got 0")
 	}
 }

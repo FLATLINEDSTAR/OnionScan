@@ -2,6 +2,8 @@ package robots
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -159,5 +161,40 @@ func TestAnalyze_RootPage_FetchesRobotsAndSitemap(t *testing.T) {
 
 	if len(f.Evidence) != 2 {
 		t.Errorf("expected 2 evidence items (from robots and sitemap), got %d", len(f.Evidence))
+	}
+}
+
+func TestAnalyze_TorClientInvoked(t *testing.T) {
+	var requestedPaths []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPaths = append(requestedPaths, r.URL.Path)
+		if r.URL.Path == "/robots.txt" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("User-agent: *\nDisallow: /admin/\n"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	client := ts.Client()
+	a := NewWithClient(client)
+
+	// Strip http:// from ts.URL to use as onion target
+	host := strings.TrimPrefix(ts.URL, "http://")
+	target := model.Target{Onion: host}
+	page := model.Page{URL: ts.URL + "/"}
+
+	findings, err := a.Analyze(context.Background(), target, page)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(requestedPaths) == 0 {
+		t.Errorf("expected client to be invoked, but no requests recorded")
+	}
+
+	if len(findings) == 0 {
+		t.Errorf("expected finding from robots.txt, got none")
 	}
 }

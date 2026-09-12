@@ -45,6 +45,49 @@ func New() *Analyzer {
 	}
 }
 
+// NewWithClient returns a robots analyzer that fetches via the provided HTTP client.
+func NewWithClient(client *http.Client) *Analyzer {
+	if client == nil {
+		return New()
+	}
+	return &Analyzer{
+		Fetch: func(ctx context.Context, urlStr string) ([]byte, int, error) {
+			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
+			if err != nil {
+				return nil, 0, err
+			}
+			req.Header.Set("User-Agent", "OnionSec/0.1 (+authorized-scan)")
+
+			resp, err := client.Do(req)
+			if err != nil {
+				return nil, 0, err
+			}
+			defer resp.Body.Close()
+
+			body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+			if err != nil {
+				return nil, resp.StatusCode, err
+			}
+			return body, resp.StatusCode, nil
+		},
+		visited: make(map[string]bool),
+	}
+}
+
+// NewWithFetch returns a robots analyzer with a custom fetch function.
+func NewWithFetch(fetch func(ctx context.Context, url string) ([]byte, int, error)) *Analyzer {
+	if fetch == nil {
+		fetch = defaultFetch
+	}
+	return &Analyzer{
+		Fetch:   fetch,
+		visited: make(map[string]bool),
+	}
+}
+
 func (a *Analyzer) Name() string { return "robots" }
 
 func (a *Analyzer) Analyze(ctx context.Context, target model.Target, page model.Page) ([]model.Finding, error) {

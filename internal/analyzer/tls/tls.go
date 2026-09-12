@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/AryanXCode646/OnionScan/internal/model"
+	"github.com/AryanXCode646/OnionScan/internal/tor"
 )
 
 // TLSInfo holds TLS handshake details and peer certificates.
@@ -39,6 +40,62 @@ func New() *Analyzer {
 		DialTLS: defaultDialTLS,
 		visited: make(map[string]bool),
 	}
+}
+
+// NewWithDialer returns a new TLS analyzer using the provided custom DialTLS function.
+func NewWithDialer(dialTLS func(ctx context.Context, target string) (*TLSInfo, error)) *Analyzer {
+	if dialTLS == nil {
+		dialTLS = defaultDialTLS
+	}
+	return &Analyzer{
+		DialTLS: dialTLS,
+		visited: make(map[string]bool),
+	}
+}
+
+// NewWithDialContext returns a new TLS analyzer that connects using dialContext
+// (such as a Tor SOCKS5 dialer) before completing the TLS handshake.
+func NewWithDialContext(dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *Analyzer {
+	if dialContext == nil {
+		return New()
+	}
+	return NewWithDialer(func(ctx context.Context, target string) (*TLSInfo, error) {
+		addr := target
+		if !strings.Contains(addr, ":") {
+			addr = net.JoinHostPort(addr, "443")
+		}
+
+		rawConn, err := dialContext(ctx, "tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		defer rawConn.Close()
+
+		host, _, _ := net.SplitHostPort(addr)
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: true,
+			ServerName:         host,
+		}
+
+		tlsConn := tls.Client(rawConn, tlsConfig)
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			return nil, err
+		}
+
+		state := tlsConn.ConnectionState()
+		return &TLSInfo{
+			Version:          state.Version,
+			CipherSuite:      state.CipherSuite,
+			PeerCertificates: state.PeerCertificates,
+		}, nil
+	})
+}
+
+// NewWithSOCKS returns a new TLS analyzer routed through the Tor SOCKS5 proxy at socksAddr.
+func NewWithSOCKS(socksAddr string) *Analyzer {
+	return NewWithDialContext(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return tor.DialContext(ctx, socksAddr, addr)
+	})
 }
 
 // Name returns "tls".

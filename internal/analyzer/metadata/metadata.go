@@ -60,6 +60,49 @@ func New() *Analyzer {
 	}
 }
 
+// NewWithClient returns a metadata analyzer that fetches images via the provided HTTP client.
+func NewWithClient(client *http.Client) *Analyzer {
+	if client == nil {
+		return New()
+	}
+	return &Analyzer{
+		Fetch: func(ctx context.Context, targetURL string) ([]byte, int, error) {
+			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+			if err != nil {
+				return nil, 0, err
+			}
+			req.Header.Set("User-Agent", "OnionSec/0.1 (+authorized-scan)")
+
+			resp, err := client.Do(req)
+			if err != nil {
+				return nil, 0, err
+			}
+			defer resp.Body.Close()
+
+			body, err := io.ReadAll(io.LimitReader(resp.Body, maxImageBytes))
+			if err != nil {
+				return nil, resp.StatusCode, err
+			}
+			return body, resp.StatusCode, nil
+		},
+		visited: make(map[string]bool),
+	}
+}
+
+// NewWithFetch returns a metadata analyzer with a custom fetch function.
+func NewWithFetch(fetch func(ctx context.Context, targetURL string) ([]byte, int, error)) *Analyzer {
+	if fetch == nil {
+		fetch = defaultFetch
+	}
+	return &Analyzer{
+		Fetch:   fetch,
+		visited: make(map[string]bool),
+	}
+}
+
 func (a *Analyzer) Name() string { return "metadata" }
 
 func (a *Analyzer) Analyze(ctx context.Context, target model.Target, page model.Page) ([]model.Finding, error) {

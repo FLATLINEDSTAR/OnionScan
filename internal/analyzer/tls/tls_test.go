@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -137,5 +138,32 @@ func TestAnalyze_UnreachableHTTPS(t *testing.T) {
 
 	if len(findings) != 0 {
 		t.Errorf("expected 0 findings when target does not serve HTTPS, got %+v", findings)
+	}
+}
+
+func TestAnalyze_TorDialContextInvoked(t *testing.T) {
+	var dialedAddr string
+	var dialerCalled bool
+
+	mockDialer := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialerCalled = true
+		dialedAddr = addr
+		return nil, errors.New("mock tor dial finished")
+	}
+
+	a := NewWithDialContext(mockDialer)
+	target := model.Target{Onion: "oniontest.onion"}
+	page := model.Page{URL: "http://oniontest.onion/"}
+
+	_, err := a.Analyze(context.Background(), target, page)
+	if err != nil {
+		t.Fatalf("unexpected fatal error: %v", err)
+	}
+
+	if !dialerCalled {
+		t.Errorf("expected custom Tor dialContext to be called")
+	}
+	if dialedAddr != "oniontest.onion:443" {
+		t.Errorf("expected dialed address 'oniontest.onion:443', got %q", dialedAddr)
 	}
 }
