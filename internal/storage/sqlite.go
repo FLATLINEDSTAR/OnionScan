@@ -46,6 +46,11 @@ func OpenSQLite(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
 	}
 
+	// SQLite only supports a single active writer at any time. Limit connection pool
+	// to 1 to serialize transactions and prevent "database is locked" (SQLITE_BUSY) errors.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
 	store := &SQLiteStore{
 		db:     db,
 		dbPath: dbPath,

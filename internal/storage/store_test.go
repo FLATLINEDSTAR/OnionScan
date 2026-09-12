@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -497,5 +499,102 @@ func TestFileStore_TargetDirTraversalSanitization(t *testing.T) {
 		if relErr != nil || strings.HasPrefix(rel, "..") {
 			t.Errorf("Save written outside tempDir: %s", savedPath)
 		}
+	}
+}
+
+func TestSQLiteStore_ConnectionPoolSettings(t *testing.T) {
+	tempDir := t.TempDir()
+	store, err := OpenSQLite(filepath.Join(tempDir, "testpool.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite failed: %v", err)
+	}
+	defer store.Close()
+
+	stats := store.db.Stats()
+	if stats.MaxOpenConnections != 1 {
+		t.Errorf("expected MaxOpenConnections=1, got %d", stats.MaxOpenConnections)
+	}
+}
+
+func TestSQLiteStore_ConcurrentSaves(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "concurrent_saves.db")
+	store, err := OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLite failed: %v", err)
+	}
+	defer store.Close()
+
+	const numWorkers = 10
+	const scansPerWorker = 3
+	var wg sync.WaitGroup
+	errCh := make(chan error, numWorkers*scansPerWorker)
+
+	now := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for s := 0; s < scansPerWorker; s++ {
+				onion := fmt.Sprintf("target-%d.onion", workerID)
+				scan := model.ScanResult{
+					Target:    model.Target{Onion: onion},
+					StartedAt: now.Add(time.Duration(s) * time.Minute),
+					EndedAt:   now.Add(time.Duration(s)*time.Minute + 30*time.Second),
+					RiskScore: (workerID*10 + s) % 100,
+					PagesSeen: 5,
+					Findings: []model.Finding{
+						{
+							ID:         "INFRA-001",
+							Title:      "IP address reference",
+							Severity:   model.SeverityMedium,
+							Confidence: 0.8,
+							Evidence: []model.Evidence{
+								{
+									Type:        model.EvidenceIP,
+									Description: fmt.Sprintf("198.51.100.%d", workerID),
+									Source:      fmt.Sprintf("http://%s/page", onion),
+								},
+							},
+						},
+						{
+							ID:         "OPSEC-002",
+							Title:      "Email disclosed",
+							Severity:   model.SeverityLow,
+							Confidence: 0.9,
+							Evidence: []model.Evidence{
+								{
+									Type:        model.EvidenceEmail,
+									Description: fmt.Sprintf("admin@target-%d.com", workerID),
+									Source:      fmt.Sprintf("http://%s/contact", onion),
+								},
+							},
+						},
+					},
+				}
+
+				if _, err := store.Save(scan); err != nil {
+					errCh <- fmt.Errorf("worker %d save %d: %w", workerID, s, err)
+					return
+				}
+			}
+		}(w)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Errorf("concurrent save error: %v", err)
+	}
+
+	// Verify all targets were recorded
+	targets, err := store.Targets()
+	if err != nil {
+		t.Fatalf("Targets failed: %v", err)
+	}
+	if len(targets) != numWorkers {
+		t.Errorf("expected %d targets, got %d", numWorkers, len(targets))
 	}
 }
