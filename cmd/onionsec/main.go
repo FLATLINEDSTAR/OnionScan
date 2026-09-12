@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/AryanXCode646/OnionScan/internal/config"
+	"github.com/AryanXCode646/OnionScan/internal/diff"
 	"github.com/AryanXCode646/OnionScan/internal/graph"
 	"github.com/AryanXCode646/OnionScan/internal/model"
 	"github.com/AryanXCode646/OnionScan/internal/report"
@@ -62,7 +63,7 @@ Usage:
   onionsec scan <target.onion> [--config <path>] [--json <out.json>] [--md <out.md>]
   onionsec report <target.onion>
   onionsec graph <target.onion> [--dot] [--out <path>]
-  onionsec monitor <target.onion>
+  onionsec monitor <target.onion> [--config <path>] [--json <out.json>] [--md <out.md>]
   onionsec version`)
 }
 
@@ -253,11 +254,122 @@ func cmdGraph(args []string) {
 }
 
 func cmdMonitor(args []string) {
-	// TODO: tracked in issue "Phase 4: implement `onionsec monitor` diffing".
-	// Should: run a new scan, load the previous scan via storage.Store,
-	// diff finding IDs/evidence, and print NEW / REMOVED / CHANGED sections.
-	fmt.Fprintln(os.Stderr, "onionsec monitor: not implemented yet -- see open issues")
-	os.Exit(1)
+	var targetOnion string
+	var configPath string
+	var explicitConfig bool
+	var jsonPath string
+	var mdPath string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--config" || arg == "-config" {
+			if i+1 < len(args) {
+				configPath = args[i+1]
+				explicitConfig = true
+				i++
+			} else {
+				fmt.Fprintln(os.Stderr, "error: --config requires a path argument")
+				os.Exit(1)
+			}
+		} else if strings.HasPrefix(arg, "--config=") || strings.HasPrefix(arg, "-config=") {
+			parts := strings.SplitN(arg, "=", 2)
+			configPath = parts[1]
+			explicitConfig = true
+		} else if arg == "--json" || arg == "-json" {
+			if i+1 < len(args) {
+				jsonPath = args[i+1]
+				i++
+			} else {
+				fmt.Fprintln(os.Stderr, "error: --json requires a path argument")
+				os.Exit(1)
+			}
+		} else if strings.HasPrefix(arg, "--json=") || strings.HasPrefix(arg, "-json=") {
+			parts := strings.SplitN(arg, "=", 2)
+			jsonPath = parts[1]
+		} else if arg == "--md" || arg == "-md" {
+			if i+1 < len(args) {
+				mdPath = args[i+1]
+				i++
+			} else {
+				fmt.Fprintln(os.Stderr, "error: --md requires a path argument")
+				os.Exit(1)
+			}
+		} else if strings.HasPrefix(arg, "--md=") || strings.HasPrefix(arg, "-md=") {
+			parts := strings.SplitN(arg, "=", 2)
+			mdPath = parts[1]
+		} else if targetOnion == "" && !strings.HasPrefix(arg, "-") {
+			targetOnion = arg
+		}
+	}
+
+	if targetOnion == "" {
+		fmt.Fprintln(os.Stderr, "usage: onionsec monitor <target.onion> [--config <path>] [--json <out.json>] [--md <out.md>]")
+		os.Exit(1)
+	}
+
+	cfg, err := config.LoadFile(configPath, explicitConfig)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config error:", err)
+		os.Exit(1)
+	}
+
+	target := model.Target{Onion: targetOnion, CreatedAt: time.Now()}
+	store := storage.New(defaultDataDir())
+
+	// 1. Retrieve the latest prior scan before running the new scan
+	oldScan, hasOld, err := store.Latest(targetOnion)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: unable to read previous scan history:", err)
+		hasOld = false
+	}
+
+	// 2. Run the new scan
+	client := tor.NewHTTPClient(cfg.SOCKSAddr, 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Limits.TotalBudget+time.Minute)
+	defer cancel()
+
+	newScan, err := scan.Run(ctx, client, store, target, cfg.Limits)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "scan failed:", err)
+		os.Exit(1)
+	}
+
+	// 3. Compute diff between previous scan and new scan
+	d := diff.Diff(oldScan, hasOld, newScan)
+
+	// 4. Render monitor diff report to stdout
+	if err := diff.RenderText(os.Stdout, d); err != nil {
+		fmt.Fprintln(os.Stderr, "render monitor report:", err)
+		os.Exit(1)
+	}
+
+	// 5. Output JSON if requested
+	if jsonPath != "" {
+		f, err := os.Create(jsonPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "create json output file:", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		if err := diff.RenderJSON(f, d); err != nil {
+			fmt.Fprintln(os.Stderr, "write json report:", err)
+			os.Exit(1)
+		}
+	}
+
+	// 6. Output Markdown if requested
+	if mdPath != "" {
+		f, err := os.Create(mdPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "create markdown output file:", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		if err := diff.RenderMarkdown(f, d); err != nil {
+			fmt.Fprintln(os.Stderr, "write markdown report:", err)
+			os.Exit(1)
+		}
+	}
 }
 
 func printSummary(r model.ScanResult) {
