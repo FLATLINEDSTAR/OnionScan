@@ -279,3 +279,79 @@ func (s *FileStore) FindCoOccurringTargets(evType model.EvidenceType, rawVal str
 
 	return entry.Targets, nil
 }
+
+// ListAssets returns evidence items and their associated targets, optionally filtered by target and evidence type.
+func (s *FileStore) ListAssets(target string, evType model.EvidenceType) ([]AssetItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var types []model.EvidenceType
+	if evType != "" {
+		types = []model.EvidenceType{evType}
+	} else {
+		types = []model.EvidenceType{
+			model.EvidenceIP,
+			model.EvidenceHostname,
+			model.EvidenceTLS,
+			model.EvidenceHTTPHeader,
+			model.EvidenceFingerprint,
+			model.EvidenceMetadata,
+			model.EvidenceEmail,
+			model.EvidenceExternalRes,
+		}
+	}
+
+	var items []AssetItem
+	for _, t := range types {
+		dir := s.indexDir(t)
+		entries, err := os.ReadDir(dir)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				continue
+			}
+			var entry EvidenceEntry
+			if err := json.Unmarshal(data, &entry); err != nil {
+				continue
+			}
+
+			if target != "" {
+				matched := false
+				for _, link := range entry.Targets {
+					if link.Onion == target {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					continue
+				}
+			}
+
+			var peers []string
+			for _, link := range entry.Targets {
+				peers = append(peers, link.Onion)
+			}
+
+			items = append(items, AssetItem{
+				Type:               entry.Type,
+				CanonicalValue:     entry.CanonicalValue,
+				FirstSeen:          entry.FirstSeen,
+				LastSeen:           entry.LastSeen,
+				CoOccurringTargets: dedupeStrings(peers),
+			})
+		}
+	}
+
+	return items, nil
+}

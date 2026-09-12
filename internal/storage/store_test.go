@@ -348,3 +348,93 @@ func TestStore_GetScan(t *testing.T) {
 		}
 	}
 }
+
+func TestStore_ListAssets(t *testing.T) {
+	tempDir := t.TempDir()
+	sqliteStore, err := New(tempDir)
+	if err != nil {
+		t.Fatalf("New sqlite store failed: %v", err)
+	}
+	defer sqliteStore.Close()
+
+	fileStore := NewFileStore(tempDir + "_file")
+	defer fileStore.Close()
+
+	now := time.Date(2026, 9, 12, 12, 30, 0, 0, time.UTC)
+	res1 := model.ScanResult{
+		Target:    model.Target{Onion: "target1.onion"},
+		StartedAt: now.Add(-time.Minute),
+		EndedAt:   now,
+		Findings: []model.Finding{
+			{
+				ID: "OPSEC-001",
+				Evidence: []model.Evidence{
+					{Type: model.EvidenceIP, Description: "198.51.100.1"},
+				},
+			},
+		},
+	}
+	res2 := model.ScanResult{
+		Target:    model.Target{Onion: "target2.onion"},
+		StartedAt: now.Add(-time.Minute),
+		EndedAt:   now,
+		Findings: []model.Finding{
+			{
+				ID: "OPSEC-001",
+				Evidence: []model.Evidence{
+					{Type: model.EvidenceIP, Description: "198.51.100.1"},
+				},
+			},
+		},
+	}
+
+	for _, s := range []Store{sqliteStore, fileStore} {
+		if err := s.IndexEvidence(res1); err != nil {
+			t.Fatalf("IndexEvidence res1 failed: %v", err)
+		}
+		if err := s.IndexEvidence(res2); err != nil {
+			t.Fatalf("IndexEvidence res2 failed: %v", err)
+		}
+
+		// List all assets
+		assets, err := s.ListAssets("", "")
+		if err != nil {
+			t.Fatalf("ListAssets failed: %v", err)
+		}
+		if len(assets) == 0 {
+			t.Fatalf("expected at least 1 asset, got 0")
+		}
+
+		found := false
+		for _, a := range assets {
+			if a.CanonicalValue == "198.51.100.1" {
+				found = true
+				if len(a.CoOccurringTargets) != 2 {
+					t.Errorf("expected 2 co-occurring targets for 198.51.100.1, got %d", len(a.CoOccurringTargets))
+				}
+			}
+		}
+		if !found {
+			t.Errorf("expected to find 198.51.100.1 in assets")
+		}
+
+		// Filter by target
+		target1Assets, err := s.ListAssets("target1.onion", "")
+		if err != nil {
+			t.Fatalf("ListAssets for target1 failed: %v", err)
+		}
+		if len(target1Assets) == 0 {
+			t.Errorf("expected assets for target1.onion")
+		}
+
+		// Filter by non-existent target
+		emptyAssets, err := s.ListAssets("nonexistent.onion", "")
+		if err != nil {
+			t.Fatalf("ListAssets for nonexistent failed: %v", err)
+		}
+		if len(emptyAssets) != 0 {
+			t.Errorf("expected 0 assets for nonexistent target, got %d", len(emptyAssets))
+		}
+	}
+}
+

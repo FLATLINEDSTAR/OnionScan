@@ -33,6 +33,15 @@ type EvidenceEntry struct {
 	Targets          []TargetLink       `json:"targets"`
 }
 
+// AssetItem represents an indexed evidence asset and its observed target co-occurrences.
+type AssetItem struct {
+	Type               model.EvidenceType `json:"type"`
+	CanonicalValue     string             `json:"canonical_value"`
+	FirstSeen          time.Time          `json:"first_seen"`
+	LastSeen           time.Time          `json:"last_seen"`
+	CoOccurringTargets []string           `json:"co_occurring_targets"`
+}
+
 // Store abstracts the persistence layer for scan results and evidence indexing.
 type Store interface {
 	Save(result model.ScanResult) (string, error)
@@ -42,6 +51,7 @@ type Store interface {
 	Targets() ([]string, error)
 	IndexEvidence(result model.ScanResult) error
 	FindCoOccurringTargets(evType model.EvidenceType, rawVal string) ([]TargetLink, error)
+	ListAssets(target string, evType model.EvidenceType) ([]AssetItem, error)
 	Close() error
 }
 

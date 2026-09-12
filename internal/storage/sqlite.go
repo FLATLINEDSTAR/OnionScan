@@ -387,3 +387,57 @@ func (s *SQLiteStore) FindCoOccurringTargets(evType model.EvidenceType, rawVal s
 	}
 	return links, nil
 }
+
+// ListAssets returns evidence items and their associated targets, optionally filtered by target and evidence type.
+func (s *SQLiteStore) ListAssets(target string, evType model.EvidenceType) ([]AssetItem, error) {
+	var query strings.Builder
+	var args []interface{}
+
+	query.WriteString(`
+		SELECT e.evidence_type, e.canonical_value, e.first_seen_at, e.last_seen_at,
+		       (SELECT GROUP_CONCAT(t2.onion_address)
+		        FROM target_evidence te2
+		        JOIN targets t2 ON te2.target_id = t2.id
+		        WHERE te2.evidence_id = e.id) AS peers
+		FROM evidence_items e
+	`)
+
+	var where []string
+	if target != "" {
+		where = append(where, `e.id IN (SELECT te.evidence_id FROM target_evidence te JOIN targets t ON te.target_id = t.id WHERE t.onion_address = ?)`)
+		args = append(args, target)
+	}
+	if evType != "" {
+		where = append(where, `e.evidence_type = ?`)
+		args = append(args, string(evType))
+	}
+
+	if len(where) > 0 {
+		query.WriteString(" WHERE " + strings.Join(where, " AND "))
+	}
+
+	query.WriteString(" ORDER BY e.last_seen_at DESC, e.canonical_value ASC;")
+
+	rows, err := s.db.Query(query.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []AssetItem
+	for rows.Next() {
+		var item AssetItem
+		var evTypeStr string
+		var peers sql.NullString
+		if err := rows.Scan(&evTypeStr, &item.CanonicalValue, &item.FirstSeen, &item.LastSeen, &peers); err != nil {
+			return nil, err
+		}
+		item.Type = model.EvidenceType(evTypeStr)
+		if peers.Valid && peers.String != "" {
+			rawPeers := strings.Split(peers.String, ",")
+			item.CoOccurringTargets = dedupeStrings(rawPeers)
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
