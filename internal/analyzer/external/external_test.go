@@ -118,3 +118,35 @@ func TestAnalyze_InternalAssetsOnly_NoFindings(t *testing.T) {
 		t.Errorf("expected 0 findings for local-only resources, got %+v", findings)
 	}
 }
+
+func TestAnalyze_CrossOriginRedirect_LocationHeader(t *testing.T) {
+	a := New()
+	target := model.Target{Onion: "test.onion"}
+	page := model.Page{
+		URL:        "http://test.onion/login",
+		StatusCode: 302,
+		Headers: map[string]string{
+			"Location": "https://external.example.com/oauth/callback",
+		},
+		Body: []byte("Redirecting..."),
+	}
+
+	findings, err := a.Analyze(context.Background(), target, page)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var foundINFRA003 bool
+	for _, f := range findings {
+		if f.ID == "INFRA-003" {
+			foundINFRA003 = true
+			if len(f.Evidence) != 1 || f.Evidence[0].Description != "https://external.example.com/oauth/callback" {
+				t.Errorf("expected Location URL in evidence, got: %+v", f.Evidence)
+			}
+		}
+	}
+
+	if !foundINFRA003 {
+		t.Errorf("expected INFRA-003 finding for cross-origin Location redirect")
+	}
+}

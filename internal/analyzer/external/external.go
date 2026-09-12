@@ -85,6 +85,13 @@ func (a *Analyzer) Analyze(ctx context.Context, target model.Target, page model.
 		}
 	}
 
+	// Check Location header for cross-origin redirects
+	for k, v := range page.Headers {
+		if strings.EqualFold(k, "Location") && strings.TrimSpace(v) != "" {
+			checkURL(v, false)
+		}
+	}
+
 	externalResources = dedupe(externalResources)
 	trackingScripts = dedupe(trackingScripts)
 

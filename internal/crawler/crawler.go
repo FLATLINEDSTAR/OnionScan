@@ -9,9 +9,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/AryanXCode646/OnionScan/internal/model"
@@ -34,6 +36,8 @@ var DefaultLimits = Limits{
 	TotalBudget: 5 * time.Minute,
 }
 
+const maxRedirects = 5
+
 var hrefRe = regexp.MustCompile(`href=["']([^"'#]+)["']`)
 
 // Crawl performs a breadth-first same-origin crawl starting at the target's
@@ -47,6 +51,13 @@ func Crawl(ctx context.Context, client *http.Client, target model.Target, limits
 
 	ctx, cancel := context.WithTimeout(ctx, limits.TotalBudget)
 	defer cancel()
+
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	crawlClient := *client
+	crawlClient.CheckRedirect = sameOriginRedirectPolicy(rootURL)
 
 	seen := map[string]bool{}
 	queue := []string{rootURL.String()}
@@ -66,14 +77,19 @@ func Crawl(ctx context.Context, client *http.Client, target model.Target, limits
 		}
 		seen[next] = true
 
-		page, links, err := fetchOne(ctx, client, next, limits)
+		page, links, err := fetchOne(ctx, &crawlClient, next, limits)
 		if err != nil {
 			continue // one dead link shouldn't abort the whole crawl
 		}
+
+		if next != page.URL && seen[page.URL] {
+			continue
+		}
+		seen[page.URL] = true
 		pages = append(pages, page)
 
 		for _, l := range links {
-			abs, ok := resolveSameOrigin(rootURL, next, l)
+			abs, ok := resolveSameOrigin(rootURL, page.URL, l)
 			if ok && !seen[abs] {
 				queue = append(queue, abs)
 			}
@@ -83,9 +99,35 @@ func Crawl(ctx context.Context, client *http.Client, target model.Target, limits
 	return pages, nil
 }
 
+func sameOriginRedirectPolicy(rootURL *url.URL) func(req *http.Request, via []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= maxRedirects {
+			return fmt.Errorf("stopped after %d redirects", maxRedirects)
+		}
+		if !sameOrigin(rootURL, req.URL) {
+			return http.ErrUseLastResponse
+		}
+		return nil
+	}
+}
+
 func fetchOne(ctx context.Context, client *http.Client, target string, limits Limits) (model.Page, []string, error) {
 	ctx, cancel := context.WithTimeout(ctx, limits.PageTimeout)
 	defer cancel()
+
+	fetchClient := client
+	if fetchClient == nil {
+		fetchClient = http.DefaultClient
+	}
+	if fetchClient.CheckRedirect == nil {
+		targetURL, err := url.Parse(target)
+		if err != nil {
+			return model.Page{}, nil, err
+		}
+		cloned := *fetchClient
+		cloned.CheckRedirect = sameOriginRedirectPolicy(targetURL)
+		fetchClient = &cloned
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
@@ -93,7 +135,7 @@ func fetchOne(ctx context.Context, client *http.Client, target string, limits Li
 	}
 	req.Header.Set("User-Agent", "OnionSec/0.1 (+authorized-scan)")
 
-	resp, err := client.Do(req)
+	resp, err := fetchClient.Do(req)
 	if err != nil {
 		return model.Page{}, nil, err
 	}
@@ -109,8 +151,13 @@ func fetchOne(ctx context.Context, client *http.Client, target string, limits Li
 		headers[k] = resp.Header.Get(k)
 	}
 
+	pageURL := target
+	if resp.Request != nil && resp.Request.URL != nil {
+		pageURL = resp.Request.URL.String()
+	}
+
 	page := model.Page{
-		URL:        target,
+		URL:        pageURL,
 		StatusCode: resp.StatusCode,
 		Headers:    headers,
 		Body:       body,
@@ -132,6 +179,30 @@ func isHTML(headers map[string]string) bool {
 	return ct == "" || regexp.MustCompile(`(?i)text/html`).MatchString(ct)
 }
 
+func normalizeURLHost(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Host))
+	h, p, err := net.SplitHostPort(host)
+	if err == nil {
+		if (u.Scheme == "http" && p == "80") || (u.Scheme == "https" && p == "443") {
+			return h
+		}
+		return net.JoinHostPort(h, p)
+	}
+	return host
+}
+
+func sameOrigin(u1, u2 *url.URL) bool {
+	if u1 == nil || u2 == nil {
+		return false
+	}
+	h1 := normalizeURLHost(u1)
+	h2 := normalizeURLHost(u2)
+	return h1 != "" && h1 == h2
+}
+
 func resolveSameOrigin(root *url.URL, base, ref string) (string, bool) {
 	baseURL, err := url.Parse(base)
 	if err != nil {
@@ -141,7 +212,7 @@ func resolveSameOrigin(root *url.URL, base, ref string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	if abs.Host != root.Host {
+	if !sameOrigin(root, abs) {
 		return "", false // cross-origin links are noted as external resources elsewhere, not crawled
 	}
 	abs.Fragment = ""
