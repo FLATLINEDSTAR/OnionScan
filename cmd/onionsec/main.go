@@ -85,14 +85,6 @@ Usage:
   onionsec version`)
 }
 
-func cleanOnion(s string) string {
-	cleaned, err := model.ValidateOnion(s)
-	if err != nil {
-		return s
-	}
-	return cleaned
-}
-
 func loadTargets(targetArg, targetsFilePath string) ([]string, error) {
 	var targets []string
 	if targetArg != "" {
