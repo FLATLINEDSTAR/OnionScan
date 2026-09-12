@@ -25,6 +25,7 @@ grouped by prefix:
 | FP-001 | Response fingerprint recorded | Info | fingerprint |
 | SEC-001 | TLS certificate issued to a clearnet hostname | High | tls |
 | SEC-002 | Weak/deprecated TLS configuration | Medium | tls |
+| OPSEC-004 | Debug/admin endpoint exposed | Low | robots |
 
 ## Planned (see docs/ROADMAP.md Phase 2/3 and the issue tracker)
 
@@ -32,7 +33,6 @@ grouped by prefix:
 |---|---|
 | OPSEC-001 | External analytics/tracking script detected |
 | OPSEC-003 | Public EXIF metadata in uploaded images |
-| OPSEC-004 | Debug/admin endpoint exposed |
 | OPSEC-008 | Cloud provider metadata endpoint reference |
 | CRED-001 | API key or token pattern in page content or JS |
 | CRED-002 | Private key header (`-----BEGIN ... PRIVATE KEY-----`) found |

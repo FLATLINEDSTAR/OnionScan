@@ -13,6 +13,7 @@ import (
 	"github.com/AryanXCode646/OnionScan/internal/analyzer/fingerprint"
 	"github.com/AryanXCode646/OnionScan/internal/analyzer/headers"
 	"github.com/AryanXCode646/OnionScan/internal/analyzer/opsec"
+	"github.com/AryanXCode646/OnionScan/internal/analyzer/robots"
 	"github.com/AryanXCode646/OnionScan/internal/analyzer/tls"
 	"github.com/AryanXCode646/OnionScan/internal/correlation"
 	"github.com/AryanXCode646/OnionScan/internal/crawler"
@@ -29,6 +30,7 @@ func DefaultRegistry() *analyzer.Registry {
 	r.Register(opsec.New())
 	r.Register(fingerprint.New())
 	r.Register(tls.New())
+	r.Register(robots.New())
 	return r
 }
 
