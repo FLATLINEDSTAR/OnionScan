@@ -40,12 +40,11 @@ being worth doing. Don't jump to Phase 5 with a weak Phase 1.
 
 ## Phase 4 — Monitoring
 
-- [ ] Implement `onionsec monitor` (currently a stub in `cmd/onionsec`):
-      run a scan, diff against `storage.Store.Latest`, print
+- [x] Implement `onionsec monitor`: run a scan, diff against `storage.Store.Latest`, print
       NEW / REMOVED / CHANGED sections
-- [ ] Migrate `internal/storage` from JSON files to SQLite
-- [ ] Scan comparison command: `onionsec diff <target> <scan-id> <scan-id>`
-- [ ] Scheduled/recurring scan support (cron-friendly CLI flags first,
+- [x] Migrate `internal/storage` from JSON files to SQLite
+- [x] Scan comparison command: `onionsec diff <target> <scan-id> <scan-id>`
+- [x] Scheduled/recurring scan support (cron-friendly CLI flags first,
       daemon mode later)
 
 ## Phase 5 — API + dashboard (only after 1–4 are solid)

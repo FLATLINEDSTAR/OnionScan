@@ -14,10 +14,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"os/signal"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/AryanXCode646/OnionScan/internal/config"
@@ -31,6 +36,15 @@ import (
 )
 
 const version = "0.1.0-dev"
+
+type exitCodeError struct {
+	code int
+	msg  string
+}
+
+func (e *exitCodeError) Error() string {
+	return e.msg
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -63,124 +77,231 @@ func usage() {
 Only scan targets you own or are authorized to test.
 
 Usage:
-  onionsec scan <target.onion> [--config <path>] [--json <out.json>] [--md <out.md>]
+  onionsec scan <target.onion> [--targets-file <path>] [--config <path>] [--json <out.json>] [--md <out.md>] [--quiet] [--fail-above-score <N>]
   onionsec report <target.onion>
   onionsec graph <target.onion> [--dot] [--out <path>]
-  onionsec monitor <target.onion> [--config <path>] [--json <out.json>] [--md <out.md>]
+  onionsec monitor <target.onion> [--targets-file <path>] [--config <path>] [--json <out.json>] [--md <out.md>] [--quiet] [--fail-on-changes] [--fail-above-score <N>] [--interval <duration>]
   onionsec diff <target.onion> <scan-id-1> <scan-id-2> [--json <out.json>] [--md <out.md>]
   onionsec version`)
 }
 
-func cmdScan(args []string) {
-	var targetOnion string
-	var configPath string
-	var explicitConfig bool
-	var jsonPath string
-	var mdPath string
+func cleanOnion(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "http://")
+	s = strings.TrimPrefix(s, "https://")
+	s = strings.TrimRight(s, "/")
+	return s
+}
+
+func loadTargets(targetArg, targetsFilePath string) ([]string, error) {
+	var targets []string
+	if targetArg != "" {
+		cleaned := cleanOnion(targetArg)
+		if cleaned != "" {
+			targets = append(targets, cleaned)
+		}
+	}
+	if targetsFilePath != "" {
+		data, err := os.ReadFile(targetsFilePath)
+		if err != nil {
+			return nil, fmt.Errorf("read targets file %q: %w", targetsFilePath, err)
+		}
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			cleaned := cleanOnion(line)
+			if cleaned != "" {
+				targets = append(targets, cleaned)
+			}
+		}
+	}
+	return targets, nil
+}
+
+type scanOptions struct {
+	targetOnion     string
+	targetsFilePath string
+	configPath      string
+	explicitConfig  bool
+	jsonPath        string
+	mdPath          string
+	quiet           bool
+	failAboveScore  int
+	hasFailAbove    bool
+}
+
+func parseScanOptions(args []string) (scanOptions, error) {
+	var opts scanOptions
+	opts.failAboveScore = -1
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "--config" || arg == "-config" {
+		switch {
+		case arg == "--config" || arg == "-config":
 			if i+1 < len(args) {
-				configPath = args[i+1]
-				explicitConfig = true
+				opts.configPath = args[i+1]
+				opts.explicitConfig = true
 				i++
 			} else {
-				fmt.Fprintln(os.Stderr, "error: --config requires a path argument")
-				os.Exit(1)
+				return opts, fmt.Errorf("error: --config requires a path argument")
 			}
-		} else if strings.HasPrefix(arg, "--config=") || strings.HasPrefix(arg, "-config=") {
-			parts := strings.SplitN(arg, "=", 2)
-			configPath = parts[1]
-			explicitConfig = true
-		} else if arg == "--json" || arg == "-json" {
+		case strings.HasPrefix(arg, "--config=") || strings.HasPrefix(arg, "-config="):
+			opts.configPath = strings.SplitN(arg, "=", 2)[1]
+			opts.explicitConfig = true
+		case arg == "--json" || arg == "-json":
 			if i+1 < len(args) {
-				jsonPath = args[i+1]
+				opts.jsonPath = args[i+1]
 				i++
 			} else {
-				fmt.Fprintln(os.Stderr, "error: --json requires a path argument")
-				os.Exit(1)
+				return opts, fmt.Errorf("error: --json requires a path argument")
 			}
-		} else if strings.HasPrefix(arg, "--json=") || strings.HasPrefix(arg, "-json=") {
-			parts := strings.SplitN(arg, "=", 2)
-			jsonPath = parts[1]
-		} else if arg == "--md" || arg == "-md" {
+		case strings.HasPrefix(arg, "--json=") || strings.HasPrefix(arg, "-json="):
+			opts.jsonPath = strings.SplitN(arg, "=", 2)[1]
+		case arg == "--md" || arg == "-md":
 			if i+1 < len(args) {
-				mdPath = args[i+1]
+				opts.mdPath = args[i+1]
 				i++
 			} else {
-				fmt.Fprintln(os.Stderr, "error: --md requires a path argument")
-				os.Exit(1)
+				return opts, fmt.Errorf("error: --md requires a path argument")
 			}
-		} else if strings.HasPrefix(arg, "--md=") || strings.HasPrefix(arg, "-md=") {
-			parts := strings.SplitN(arg, "=", 2)
-			mdPath = parts[1]
-		} else if targetOnion == "" && !strings.HasPrefix(arg, "-") {
-			targetOnion = arg
+		case strings.HasPrefix(arg, "--md=") || strings.HasPrefix(arg, "-md="):
+			opts.mdPath = strings.SplitN(arg, "=", 2)[1]
+		case arg == "--targets-file" || arg == "-targets-file":
+			if i+1 < len(args) {
+				opts.targetsFilePath = args[i+1]
+				i++
+			} else {
+				return opts, fmt.Errorf("error: --targets-file requires a path argument")
+			}
+		case strings.HasPrefix(arg, "--targets-file=") || strings.HasPrefix(arg, "-targets-file="):
+			opts.targetsFilePath = strings.SplitN(arg, "=", 2)[1]
+		case arg == "--quiet" || arg == "-quiet" || arg == "-q":
+			opts.quiet = true
+		case arg == "--fail-above-score" || arg == "-fail-above-score":
+			if i+1 < len(args) {
+				val, err := strconv.Atoi(args[i+1])
+				if err != nil {
+					return opts, fmt.Errorf("invalid score for --fail-above-score: %w", err)
+				}
+				opts.failAboveScore = val
+				opts.hasFailAbove = true
+				i++
+			} else {
+				return opts, fmt.Errorf("error: --fail-above-score requires an integer argument")
+			}
+		case strings.HasPrefix(arg, "--fail-above-score=") || strings.HasPrefix(arg, "-fail-above-score="):
+			val, err := strconv.Atoi(strings.SplitN(arg, "=", 2)[1])
+			if err != nil {
+				return opts, fmt.Errorf("invalid score for --fail-above-score: %w", err)
+			}
+			opts.failAboveScore = val
+			opts.hasFailAbove = true
+		case opts.targetOnion == "" && !strings.HasPrefix(arg, "-"):
+			opts.targetOnion = arg
 		}
 	}
+	return opts, nil
+}
 
-	if targetOnion == "" {
-		fmt.Fprintln(os.Stderr, "usage: onionsec scan <target.onion> [--config <path>] [--json <out.json>] [--md <out.md>]")
+func cmdScan(args []string) {
+	if err := runScan(context.Background(), args, os.Stdout, os.Stderr); err != nil {
+		var exitErr *exitCodeError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.code)
+		}
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
 
-	cfg, err := config.LoadFile(configPath, explicitConfig)
+func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	return runScanWithClient(ctx, args, nil, stdout, stderr)
+}
+
+func runScanWithClient(ctx context.Context, args []string, client *http.Client, stdout, stderr io.Writer) error {
+	opts, err := parseScanOptions(args)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "config error:", err)
-		os.Exit(1)
+		return err
 	}
 
-	target := model.Target{Onion: targetOnion, CreatedAt: time.Now()}
+	targets, err := loadTargets(opts.targetOnion, opts.targetsFilePath)
+	if err != nil {
+		return err
+	}
+	if len(targets) == 0 {
+		return fmt.Errorf("usage: onionsec scan <target.onion> [--targets-file <path>] [--config <path>] [--json <out.json>] [--md <out.md>] [--quiet] [--fail-above-score <N>]")
+	}
 
-	client := tor.NewHTTPClient(cfg.SOCKSAddr, 30*time.Second)
+	cfg, err := config.LoadFile(opts.configPath, opts.explicitConfig)
+	if err != nil {
+		return fmt.Errorf("config error: %w", err)
+	}
+
 	store, err := storage.New(defaultDataDir())
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "storage error:", err)
-		os.Exit(1)
+		return fmt.Errorf("storage error: %w", err)
 	}
 	defer store.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.Limits.TotalBudget+time.Minute)
-	defer cancel()
-
-	result, err := scan.Run(ctx, client, store, target, cfg.Limits)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "scan failed:", err)
-		os.Exit(1)
+	if client == nil {
+		client = tor.NewHTTPClient(cfg.SOCKSAddr, 30*time.Second)
 	}
 
-	printSummary(result)
-	if err := report.WriteMarkdown(os.Stdout, result); err != nil {
-		fmt.Fprintln(os.Stderr, "render report:", err)
-		os.Exit(1)
-	}
+	maxScore := 0
+	for _, onion := range targets {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 
-	if jsonPath != "" {
-		f, err := os.Create(jsonPath)
+		target := model.Target{Onion: onion, CreatedAt: time.Now()}
+		scanCtx, cancel := context.WithTimeout(ctx, cfg.Limits.TotalBudget+time.Minute)
+		result, err := scan.Run(scanCtx, client, store, target, cfg.Limits)
+		cancel()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "create json output file:", err)
-			os.Exit(1)
+			fmt.Fprintf(stderr, "scan failed [%s]: %v\n", onion, err)
+			continue
 		}
-		defer f.Close()
-		if err := report.WriteJSON(f, result); err != nil {
-			fmt.Fprintln(os.Stderr, "write json report:", err)
-			os.Exit(1)
+
+		if result.RiskScore > maxScore {
+			maxScore = result.RiskScore
+		}
+
+		if !opts.quiet || (opts.hasFailAbove && result.RiskScore > opts.failAboveScore) || len(result.Findings) > 0 {
+			printSummary(stdout, result)
+			if err := report.WriteMarkdown(stdout, result); err != nil {
+				fmt.Fprintf(stderr, "render report [%s]: %v\n", onion, err)
+			}
+		}
+
+		if opts.jsonPath != "" {
+			f, err := os.Create(opts.jsonPath)
+			if err != nil {
+				fmt.Fprintf(stderr, "create json output [%s]: %v\n", onion, err)
+			} else {
+				_ = report.WriteJSON(f, result)
+				f.Close()
+			}
+		}
+
+		if opts.mdPath != "" {
+			f, err := os.Create(opts.mdPath)
+			if err != nil {
+				fmt.Fprintf(stderr, "create md output [%s]: %v\n", onion, err)
+			} else {
+				_ = report.WriteMarkdown(f, result)
+				f.Close()
+			}
 		}
 	}
 
-	if mdPath != "" {
-		f, err := os.Create(mdPath)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "create markdown output file:", err)
-			os.Exit(1)
-		}
-		defer f.Close()
-		if err := report.WriteMarkdown(f, result); err != nil {
-			fmt.Fprintln(os.Stderr, "write markdown report:", err)
-			os.Exit(1)
-		}
+	if opts.hasFailAbove && maxScore > opts.failAboveScore {
+		return &exitCodeError{code: 2, msg: fmt.Sprintf("risk score %d exceeded threshold %d", maxScore, opts.failAboveScore)}
 	}
+
+	return nil
 }
 
 func cmdReport(args []string) {
@@ -272,128 +393,257 @@ func cmdGraph(args []string) {
 	}
 }
 
-func cmdMonitor(args []string) {
-	var targetOnion string
-	var configPath string
-	var explicitConfig bool
-	var jsonPath string
-	var mdPath string
+type monitorOptions struct {
+	targetOnion     string
+	targetsFilePath string
+	configPath      string
+	explicitConfig  bool
+	jsonPath        string
+	mdPath          string
+	quiet           bool
+	failOnChanges   bool
+	failAboveScore  int
+	hasFailAbove    bool
+	interval        time.Duration
+}
+
+func parseMonitorOptions(args []string) (monitorOptions, error) {
+	var opts monitorOptions
+	opts.failAboveScore = -1
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "--config" || arg == "-config" {
+		switch {
+		case arg == "--config" || arg == "-config":
 			if i+1 < len(args) {
-				configPath = args[i+1]
-				explicitConfig = true
+				opts.configPath = args[i+1]
+				opts.explicitConfig = true
 				i++
 			} else {
-				fmt.Fprintln(os.Stderr, "error: --config requires a path argument")
-				os.Exit(1)
+				return opts, fmt.Errorf("error: --config requires a path argument")
 			}
-		} else if strings.HasPrefix(arg, "--config=") || strings.HasPrefix(arg, "-config=") {
-			parts := strings.SplitN(arg, "=", 2)
-			configPath = parts[1]
-			explicitConfig = true
-		} else if arg == "--json" || arg == "-json" {
+		case strings.HasPrefix(arg, "--config=") || strings.HasPrefix(arg, "-config="):
+			opts.configPath = strings.SplitN(arg, "=", 2)[1]
+			opts.explicitConfig = true
+		case arg == "--json" || arg == "-json":
 			if i+1 < len(args) {
-				jsonPath = args[i+1]
+				opts.jsonPath = args[i+1]
 				i++
 			} else {
-				fmt.Fprintln(os.Stderr, "error: --json requires a path argument")
-				os.Exit(1)
+				return opts, fmt.Errorf("error: --json requires a path argument")
 			}
-		} else if strings.HasPrefix(arg, "--json=") || strings.HasPrefix(arg, "-json=") {
-			parts := strings.SplitN(arg, "=", 2)
-			jsonPath = parts[1]
-		} else if arg == "--md" || arg == "-md" {
+		case strings.HasPrefix(arg, "--json=") || strings.HasPrefix(arg, "-json="):
+			opts.jsonPath = strings.SplitN(arg, "=", 2)[1]
+		case arg == "--md" || arg == "-md":
 			if i+1 < len(args) {
-				mdPath = args[i+1]
+				opts.mdPath = args[i+1]
 				i++
 			} else {
-				fmt.Fprintln(os.Stderr, "error: --md requires a path argument")
-				os.Exit(1)
+				return opts, fmt.Errorf("error: --md requires a path argument")
 			}
-		} else if strings.HasPrefix(arg, "--md=") || strings.HasPrefix(arg, "-md=") {
-			parts := strings.SplitN(arg, "=", 2)
-			mdPath = parts[1]
-		} else if targetOnion == "" && !strings.HasPrefix(arg, "-") {
-			targetOnion = arg
+		case strings.HasPrefix(arg, "--md=") || strings.HasPrefix(arg, "-md="):
+			opts.mdPath = strings.SplitN(arg, "=", 2)[1]
+		case arg == "--targets-file" || arg == "-targets-file":
+			if i+1 < len(args) {
+				opts.targetsFilePath = args[i+1]
+				i++
+			} else {
+				return opts, fmt.Errorf("error: --targets-file requires a path argument")
+			}
+		case strings.HasPrefix(arg, "--targets-file=") || strings.HasPrefix(arg, "-targets-file="):
+			opts.targetsFilePath = strings.SplitN(arg, "=", 2)[1]
+		case arg == "--quiet" || arg == "-quiet" || arg == "-q":
+			opts.quiet = true
+		case arg == "--fail-on-changes" || arg == "-fail-on-changes":
+			opts.failOnChanges = true
+		case arg == "--fail-above-score" || arg == "-fail-above-score":
+			if i+1 < len(args) {
+				val, err := strconv.Atoi(args[i+1])
+				if err != nil {
+					return opts, fmt.Errorf("invalid score for --fail-above-score: %w", err)
+				}
+				opts.failAboveScore = val
+				opts.hasFailAbove = true
+				i++
+			} else {
+				return opts, fmt.Errorf("error: --fail-above-score requires an integer argument")
+			}
+		case strings.HasPrefix(arg, "--fail-above-score=") || strings.HasPrefix(arg, "-fail-above-score="):
+			val, err := strconv.Atoi(strings.SplitN(arg, "=", 2)[1])
+			if err != nil {
+				return opts, fmt.Errorf("invalid score for --fail-above-score: %w", err)
+			}
+			opts.failAboveScore = val
+			opts.hasFailAbove = true
+		case arg == "--interval" || arg == "-interval":
+			if i+1 < len(args) {
+				dur, err := time.ParseDuration(args[i+1])
+				if err != nil {
+					return opts, fmt.Errorf("invalid duration for --interval: %w", err)
+				}
+				opts.interval = dur
+				i++
+			} else {
+				return opts, fmt.Errorf("error: --interval requires a duration argument (e.g. 1h, 30m)")
+			}
+		case strings.HasPrefix(arg, "--interval=") || strings.HasPrefix(arg, "-interval="):
+			dur, err := time.ParseDuration(strings.SplitN(arg, "=", 2)[1])
+			if err != nil {
+				return opts, fmt.Errorf("invalid duration for --interval: %w", err)
+			}
+			opts.interval = dur
+		case opts.targetOnion == "" && !strings.HasPrefix(arg, "-"):
+			opts.targetOnion = arg
 		}
 	}
+	return opts, nil
+}
 
-	if targetOnion == "" {
-		fmt.Fprintln(os.Stderr, "usage: onionsec monitor <target.onion> [--config <path>] [--json <out.json>] [--md <out.md>]")
+func cmdMonitor(args []string) {
+	if err := runMonitor(context.Background(), args, os.Stdout, os.Stderr); err != nil {
+		var exitErr *exitCodeError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.code)
+		}
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
 
-	cfg, err := config.LoadFile(configPath, explicitConfig)
+func runMonitor(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	return runMonitorWithClient(ctx, args, nil, stdout, stderr)
+}
+
+func runMonitorWithClient(ctx context.Context, args []string, client *http.Client, stdout, stderr io.Writer) error {
+	opts, err := parseMonitorOptions(args)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "config error:", err)
-		os.Exit(1)
+		return err
 	}
 
-	target := model.Target{Onion: targetOnion, CreatedAt: time.Now()}
+	targets, err := loadTargets(opts.targetOnion, opts.targetsFilePath)
+	if err != nil {
+		return err
+	}
+	if len(targets) == 0 {
+		return fmt.Errorf("usage: onionsec monitor <target.onion> [--targets-file <path>] [--config <path>] [--json <out.json>] [--md <out.md>] [--quiet] [--fail-on-changes] [--fail-above-score <N>] [--interval <duration>]")
+	}
+
+	cfg, err := config.LoadFile(opts.configPath, opts.explicitConfig)
+	if err != nil {
+		return fmt.Errorf("config error: %w", err)
+	}
+
 	store, err := storage.New(defaultDataDir())
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "storage error:", err)
-		os.Exit(1)
+		return fmt.Errorf("storage error: %w", err)
 	}
 	defer store.Close()
 
-	// 1. Retrieve the latest prior scan before running the new scan
-	oldScan, hasOld, err := store.Latest(targetOnion)
+	if client == nil {
+		client = tor.NewHTTPClient(cfg.SOCKSAddr, 30*time.Second)
+	}
+
+	if opts.interval > 0 {
+		sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		defer stop()
+
+		ticker := time.NewTicker(opts.interval)
+		defer ticker.Stop()
+
+		// Initial cycle
+		if _, _, err := executeMonitorBatch(sigCtx, targets, opts, cfg, store, client, stdout, stderr); err != nil {
+			fmt.Fprintf(stderr, "monitor cycle error: %v\n", err)
+		}
+
+		for {
+			select {
+			case <-sigCtx.Done():
+				return nil
+			case <-ticker.C:
+				if _, _, err := executeMonitorBatch(sigCtx, targets, opts, cfg, store, client, stdout, stderr); err != nil {
+					fmt.Fprintf(stderr, "monitor cycle error: %v\n", err)
+				}
+			}
+		}
+	}
+
+	hadChanges, maxScore, err := executeMonitorBatch(ctx, targets, opts, cfg, store, client, stdout, stderr)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "warning: unable to read previous scan history:", err)
-		hasOld = false
+		return err
 	}
 
-	// 2. Run the new scan
-	client := tor.NewHTTPClient(cfg.SOCKSAddr, 30*time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.Limits.TotalBudget+time.Minute)
-	defer cancel()
-
-	newScan, err := scan.Run(ctx, client, store, target, cfg.Limits)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "scan failed:", err)
-		os.Exit(1)
+	if opts.failOnChanges && hadChanges {
+		return &exitCodeError{code: 2, msg: "changes detected between scans"}
+	}
+	if opts.hasFailAbove && maxScore > opts.failAboveScore {
+		return &exitCodeError{code: 2, msg: fmt.Sprintf("risk score %d exceeded threshold %d", maxScore, opts.failAboveScore)}
 	}
 
-	// 3. Compute diff between previous scan and new scan
-	d := diff.Diff(oldScan, hasOld, newScan)
+	return nil
+}
 
-	// 4. Render monitor diff report to stdout
-	if err := diff.RenderText(os.Stdout, d); err != nil {
-		fmt.Fprintln(os.Stderr, "render monitor report:", err)
-		os.Exit(1)
-	}
+func executeMonitorBatch(ctx context.Context, targets []string, opts monitorOptions, cfg config.Config, store storage.Store, client *http.Client, stdout, stderr io.Writer) (bool, int, error) {
+	hadAnyChanges := false
+	maxScore := 0
 
-	// 5. Output JSON if requested
-	if jsonPath != "" {
-		f, err := os.Create(jsonPath)
+	for _, onion := range targets {
+		if ctx.Err() != nil {
+			return hadAnyChanges, maxScore, ctx.Err()
+		}
+
+		target := model.Target{Onion: onion, CreatedAt: time.Now()}
+
+		oldScan, hasOld, err := store.Latest(onion)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "create json output file:", err)
-			os.Exit(1)
+			fmt.Fprintf(stderr, "warning [%s]: unable to read previous scan history: %v\n", onion, err)
+			hasOld = false
 		}
-		defer f.Close()
-		if err := diff.RenderJSON(f, d); err != nil {
-			fmt.Fprintln(os.Stderr, "write json report:", err)
-			os.Exit(1)
+
+		scanCtx, cancel := context.WithTimeout(ctx, cfg.Limits.TotalBudget+time.Minute)
+		newScan, err := scan.Run(scanCtx, client, store, target, cfg.Limits)
+		cancel()
+		if err != nil {
+			fmt.Fprintf(stderr, "scan failed [%s]: %v\n", onion, err)
+			continue
+		}
+
+		if newScan.RiskScore > maxScore {
+			maxScore = newScan.RiskScore
+		}
+
+		d := diff.Diff(oldScan, hasOld, newScan)
+		if d.HasChanges() {
+			hadAnyChanges = true
+		}
+
+		if !opts.quiet || d.HasChanges() {
+			if err := diff.RenderText(stdout, d); err != nil {
+				fmt.Fprintf(stderr, "render monitor report [%s]: %v\n", onion, err)
+			}
+		}
+
+		if opts.jsonPath != "" {
+			f, err := os.Create(opts.jsonPath)
+			if err != nil {
+				fmt.Fprintf(stderr, "create json output [%s]: %v\n", onion, err)
+			} else {
+				_ = diff.RenderJSON(f, d)
+				f.Close()
+			}
+		}
+
+		if opts.mdPath != "" {
+			f, err := os.Create(opts.mdPath)
+			if err != nil {
+				fmt.Fprintf(stderr, "create markdown output [%s]: %v\n", onion, err)
+			} else {
+				_ = diff.RenderMarkdown(f, d)
+				f.Close()
+			}
 		}
 	}
 
-	// 6. Output Markdown if requested
-	if mdPath != "" {
-		f, err := os.Create(mdPath)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "create markdown output file:", err)
-			os.Exit(1)
-		}
-		defer f.Close()
-		if err := diff.RenderMarkdown(f, d); err != nil {
-			fmt.Fprintln(os.Stderr, "write markdown report:", err)
-			os.Exit(1)
-		}
-	}
+	return hadAnyChanges, maxScore, nil
 }
 
 func cmdDiff(args []string) {
@@ -496,10 +746,10 @@ func runDiff(args []string, stdout io.Writer) error {
 	return nil
 }
 
-func printSummary(r model.ScanResult) {
-	fmt.Printf("Target:     %s\n", r.Target.Onion)
-	fmt.Printf("Pages seen: %d\n", r.PagesSeen)
-	fmt.Printf("Risk score: %d / 100\n\n", r.RiskScore)
+func printSummary(w io.Writer, r model.ScanResult) {
+	fmt.Fprintf(w, "Target:     %s\n", r.Target.Onion)
+	fmt.Fprintf(w, "Pages seen: %d\n", r.PagesSeen)
+	fmt.Fprintf(w, "Risk score: %d / 100\n\n", r.RiskScore)
 }
 
 func defaultDataDir() string {

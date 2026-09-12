@@ -56,7 +56,7 @@ go build -o onionsec ./cmd/onionsec
 ./onionsec graph youronionaddresshere.onion
 ```
 
-Scan history and relational evidence indexing are persisted in a local SQLite database at `~/.onionsec/onionsec.db`.
+Scan history and relational evidence indexing are persisted in a local SQLite database at `~/.onionsec/onionsec.db`. For scheduled scanning, cron automation, and systemd integration, see [`docs/MONITORING.md`](docs/MONITORING.md).
 
 ## How it works
 
