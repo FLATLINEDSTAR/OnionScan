@@ -79,6 +79,17 @@ attack surface. OnionSec must:
 The repository is named `OnionScan` (matching the original project this
 grew out of), but the binary and internal Go module path use `onionsec` /
 `OnionScan` respectively to avoid confusion with the unrelated, actively
-maintained OnionScan project. If you rename the GitHub repository later,
-update the `module` line in `go.mod` and all internal import paths
-accordingly (tracked as an optional issue).
+maintained OnionScan project.
+
+If you rename the GitHub repository later (e.g. to `github.com/<org>/OnionSec`),
+run the provided automation script to update `go.mod` and all internal import
+declarations:
+
+```bash
+./scripts/rename_module.sh github.com/<new-org>/<new-repo>
+```
+
+This updates `go.mod`, rewires all internal package imports across the codebase,
+formats source files with `gofmt`, and verifies compilation and tests with
+`go vet` and `go test ./...`.
+
