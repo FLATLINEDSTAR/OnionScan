@@ -21,7 +21,7 @@ type SQLiteStore struct {
 // OpenSQLite opens or creates a SQLite-backed store at dbPath.
 // If dbPath is ":memory:", an in-memory database is used.
 func OpenSQLite(dbPath string) (*SQLiteStore, error) {
-	dsn := dbPath
+	var dsn string
 	if dbPath == ":memory:" {
 		dsn = "file::memory:?cache=shared&mode=memory"
 	} else {
