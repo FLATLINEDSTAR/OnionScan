@@ -56,7 +56,7 @@ func usage() {
 Only scan targets you own or are authorized to test.
 
 Usage:
-  onionsec scan <target.onion> [--config <path>]
+  onionsec scan <target.onion> [--config <path>] [--json <out.json>] [--md <out.md>]
   onionsec report <target.onion>
   onionsec monitor <target.onion>
   onionsec version`)
@@ -66,6 +66,8 @@ func cmdScan(args []string) {
 	var targetOnion string
 	var configPath string
 	var explicitConfig bool
+	var jsonPath string
+	var mdPath string
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -82,15 +84,35 @@ func cmdScan(args []string) {
 			parts := strings.SplitN(arg, "=", 2)
 			configPath = parts[1]
 			explicitConfig = true
-		} else if strings.HasPrefix(arg, "-") {
-			// other flags will be handled in subsequent issues
-		} else if targetOnion == "" {
+		} else if arg == "--json" || arg == "-json" {
+			if i+1 < len(args) {
+				jsonPath = args[i+1]
+				i++
+			} else {
+				fmt.Fprintln(os.Stderr, "error: --json requires a path argument")
+				os.Exit(1)
+			}
+		} else if strings.HasPrefix(arg, "--json=") || strings.HasPrefix(arg, "-json=") {
+			parts := strings.SplitN(arg, "=", 2)
+			jsonPath = parts[1]
+		} else if arg == "--md" || arg == "-md" {
+			if i+1 < len(args) {
+				mdPath = args[i+1]
+				i++
+			} else {
+				fmt.Fprintln(os.Stderr, "error: --md requires a path argument")
+				os.Exit(1)
+			}
+		} else if strings.HasPrefix(arg, "--md=") || strings.HasPrefix(arg, "-md=") {
+			parts := strings.SplitN(arg, "=", 2)
+			mdPath = parts[1]
+		} else if targetOnion == "" && !strings.HasPrefix(arg, "-") {
 			targetOnion = arg
 		}
 	}
 
 	if targetOnion == "" {
-		fmt.Fprintln(os.Stderr, "usage: onionsec scan <target.onion> [--config <path>]")
+		fmt.Fprintln(os.Stderr, "usage: onionsec scan <target.onion> [--config <path>] [--json <out.json>] [--md <out.md>]")
 		os.Exit(1)
 	}
 
@@ -118,6 +140,32 @@ func cmdScan(args []string) {
 	if err := report.WriteMarkdown(os.Stdout, result); err != nil {
 		fmt.Fprintln(os.Stderr, "render report:", err)
 		os.Exit(1)
+	}
+
+	if jsonPath != "" {
+		f, err := os.Create(jsonPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "create json output file:", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		if err := report.WriteJSON(f, result); err != nil {
+			fmt.Fprintln(os.Stderr, "write json report:", err)
+			os.Exit(1)
+		}
+	}
+
+	if mdPath != "" {
+		f, err := os.Create(mdPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "create markdown output file:", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		if err := report.WriteMarkdown(f, result); err != nil {
+			fmt.Fprintln(os.Stderr, "write markdown report:", err)
+			os.Exit(1)
+		}
 	}
 }
 
