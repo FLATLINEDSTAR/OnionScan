@@ -74,14 +74,43 @@ func Diff(oldScan model.ScanResult, hasOld bool, newScan model.ScanResult) DiffR
 
 	oldScanID := oldScan.EndedAt.UTC().Format("20060102T150405Z")
 
-	oldMap := make(map[string]model.Finding)
-	for _, f := range oldScan.Findings {
-		oldMap[f.ID] = f
+	// Index old findings by findingKey to support multi-finding matching
+	oldKeyIndices := make(map[string][]int)
+	for i, f := range oldScan.Findings {
+		k := findingKey(f)
+		oldKeyIndices[k] = append(oldKeyIndices[k], i)
 	}
 
-	newMap := make(map[string]model.Finding)
-	for _, f := range newScan.Findings {
-		newMap[f.ID] = f
+	matchedOld := make(map[int]bool)
+	matchedNew := make(map[int]int) // newIndex -> oldIndex
+
+	// Pass 1: exact match on findingKey
+	for j, nf := range newScan.Findings {
+		k := findingKey(nf)
+		for _, oldIdx := range oldKeyIndices[k] {
+			if !matchedOld[oldIdx] {
+				matchedOld[oldIdx] = true
+				matchedNew[j] = oldIdx
+				break
+			}
+		}
+	}
+
+	// Pass 2: for unmatched findings sharing rule ID and Title, match if they share evidence
+	for j, nf := range newScan.Findings {
+		if _, ok := matchedNew[j]; ok {
+			continue
+		}
+		for i, of := range oldScan.Findings {
+			if matchedOld[i] {
+				continue
+			}
+			if of.ID == nf.ID && of.Title == nf.Title && hasSharedEvidence(of, nf) {
+				matchedOld[i] = true
+				matchedNew[j] = i
+				break
+			}
+		}
 	}
 
 	var newFindings []model.Finding
@@ -89,14 +118,14 @@ func Diff(oldScan model.ScanResult, hasOld bool, newScan model.ScanResult) DiffR
 	var persistingFindings []model.Finding
 	unchangedCount := 0
 
-	// Check each finding in new scan against old scan
-	for _, nf := range newScan.Findings {
-		of, exists := oldMap[nf.ID]
-		if !exists {
+	for j, nf := range newScan.Findings {
+		oldIdx, ok := matchedNew[j]
+		if !ok {
 			newFindings = append(newFindings, nf)
 			continue
 		}
 
+		of := oldScan.Findings[oldIdx]
 		persistingFindings = append(persistingFindings, nf)
 		changes := inspectChanges(of, nf)
 		if len(changes) > 0 {
@@ -114,8 +143,8 @@ func Diff(oldScan model.ScanResult, hasOld bool, newScan model.ScanResult) DiffR
 
 	// Check for removed findings
 	var removedFindings []model.Finding
-	for _, of := range oldScan.Findings {
-		if _, exists := newMap[of.ID]; !exists {
+	for i, of := range oldScan.Findings {
+		if !matchedOld[i] {
 			removedFindings = append(removedFindings, of)
 		}
 	}
@@ -349,4 +378,54 @@ func renderFindingTable(w io.Writer, findings []model.Finding) {
 		fmt.Fprintf(w, "| `%s` | %s | %s | %.2f | %s |\n", f.ID, f.Title, f.Severity, f.Confidence, f.Analyzer)
 	}
 	fmt.Fprintln(w)
+}
+
+// FindingKey generates a stable identifier for a finding based on its rule ID,
+// title, target, and primary evidence descriptions. This prevents collisions
+// when multiple findings share the same rule ID.
+func FindingKey(f model.Finding) string {
+	return findingKey(f)
+}
+
+func findingKey(f model.Finding) string {
+	var primaryEv string
+	if len(f.Evidence) > 0 {
+		ev := f.Evidence[0]
+		desc := strings.TrimSpace(ev.Description)
+		if desc == "" {
+			desc = strings.TrimSpace(ev.Source)
+		}
+		if desc != "" {
+			primaryEv = fmt.Sprintf("%s:%s", ev.Type, desc)
+		} else {
+			primaryEv = string(ev.Type)
+		}
+	} else if strings.TrimSpace(f.Explanation) != "" {
+		primaryEv = strings.TrimSpace(f.Explanation)
+	}
+
+	id := strings.TrimSpace(f.ID)
+	title := strings.TrimSpace(f.Title)
+	target := strings.TrimSpace(f.Target)
+
+	if primaryEv != "" {
+		return fmt.Sprintf("%s|%s|%s|%s", id, title, target, primaryEv)
+	}
+	return fmt.Sprintf("%s|%s|%s", id, title, target)
+}
+
+func hasSharedEvidence(f1, f2 model.Finding) bool {
+	if len(f1.Evidence) == 0 || len(f2.Evidence) == 0 {
+		return false
+	}
+	evSet := make(map[string]bool, len(f1.Evidence))
+	for _, e := range f1.Evidence {
+		evSet[string(e.Type)+":"+strings.TrimSpace(e.Description)] = true
+	}
+	for _, e := range f2.Evidence {
+		if evSet[string(e.Type)+":"+strings.TrimSpace(e.Description)] {
+			return true
+		}
+	}
+	return false
 }

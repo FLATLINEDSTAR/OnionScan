@@ -185,3 +185,226 @@ func TestDiff_NewRemovedAndChangedFindings(t *testing.T) {
 		t.Errorf("RenderJSON invalid output: %s", jsonBuf.String())
 	}
 }
+
+func TestDiff_MultipleFindingsSameRuleID(t *testing.T) {
+	t1 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 9, 12, 11, 0, 0, 0, time.UTC)
+
+	// Scan 1 has 3 distinct findings sharing the same rule ID (OPSEC-002)
+	fAlice := model.Finding{
+		ID:         "OPSEC-002",
+		Title:      "Email address disclosed in page content",
+		Severity:   model.SeverityMedium,
+		Confidence: 0.90,
+		Evidence:   []model.Evidence{{Type: model.EvidenceEmail, Description: "alice@example.com"}},
+	}
+	fBob := model.Finding{
+		ID:         "OPSEC-002",
+		Title:      "Email address disclosed in page content",
+		Severity:   model.SeverityMedium,
+		Confidence: 0.90,
+		Evidence:   []model.Evidence{{Type: model.EvidenceEmail, Description: "bob@example.com"}},
+	}
+	fCharlie := model.Finding{
+		ID:         "OPSEC-002",
+		Title:      "Email address disclosed in page content",
+		Severity:   model.SeverityMedium,
+		Confidence: 0.90,
+		Evidence:   []model.Evidence{{Type: model.EvidenceEmail, Description: "charlie@example.com"}},
+	}
+
+	// Scan 2:
+	// - alice and charlie resolved
+	// - bob persists
+	// - david added (new finding under OPSEC-002)
+	fDavid := model.Finding{
+		ID:         "OPSEC-002",
+		Title:      "Email address disclosed in page content",
+		Severity:   model.SeverityMedium,
+		Confidence: 0.90,
+		Evidence:   []model.Evidence{{Type: model.EvidenceEmail, Description: "david@example.com"}},
+	}
+
+	oldScan := model.ScanResult{
+		Target:    model.Target{Onion: "multi.onion"},
+		EndedAt:   t1,
+		RiskScore: 45,
+		Findings:  []model.Finding{fAlice, fBob, fCharlie},
+	}
+	newScan := model.ScanResult{
+		Target:    model.Target{Onion: "multi.onion"},
+		EndedAt:   t2,
+		RiskScore: 30,
+		Findings:  []model.Finding{fBob, fDavid},
+	}
+
+	d := Diff(oldScan, true, newScan)
+
+	if !d.HasChanges() {
+		t.Fatalf("expected HasChanges to be true")
+	}
+
+	// New findings: david only
+	if len(d.NewFindings) != 1 {
+		t.Fatalf("expected 1 new finding, got %d: %+v", len(d.NewFindings), d.NewFindings)
+	}
+	if d.NewFindings[0].Evidence[0].Description != "david@example.com" {
+		t.Errorf("expected david@example.com as new finding, got %s", d.NewFindings[0].Evidence[0].Description)
+	}
+
+	// Removed findings: alice and charlie
+	if len(d.RemovedFindings) != 2 {
+		t.Fatalf("expected 2 removed findings, got %d: %+v", len(d.RemovedFindings), d.RemovedFindings)
+	}
+	removedEmails := map[string]bool{}
+	for _, f := range d.RemovedFindings {
+		if len(f.Evidence) > 0 {
+			removedEmails[f.Evidence[0].Description] = true
+		}
+	}
+	if !removedEmails["alice@example.com"] || !removedEmails["charlie@example.com"] {
+		t.Errorf("expected alice and charlie in removed findings, got: %+v", removedEmails)
+	}
+
+	// ResolvedFindings should match RemovedFindings
+	if len(d.ResolvedFindings) != len(d.RemovedFindings) {
+		t.Errorf("expected ResolvedFindings len %d, got %d", len(d.RemovedFindings), len(d.ResolvedFindings))
+	}
+
+	// Persisting findings: bob
+	if len(d.PersistingFindings) != 1 {
+		t.Fatalf("expected 1 persisting finding, got %d", len(d.PersistingFindings))
+	}
+	if d.PersistingFindings[0].Evidence[0].Description != "bob@example.com" {
+		t.Errorf("expected bob@example.com to persist, got %s", d.PersistingFindings[0].Evidence[0].Description)
+	}
+	if d.UnchangedCount != 1 {
+		t.Errorf("expected 1 unchanged finding, got %d", d.UnchangedCount)
+	}
+	if len(d.ChangedFindings) != 0 {
+		t.Errorf("expected 0 changed findings, got %d", len(d.ChangedFindings))
+	}
+}
+
+func TestDiff_MultipleFindingsSameRuleID_WithModifications(t *testing.T) {
+	t1 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 9, 12, 11, 0, 0, 0, time.UTC)
+
+	f1 := model.Finding{
+		ID:         "OPSEC-002",
+		Title:      "Email address disclosed",
+		Severity:   model.SeverityMedium,
+		Confidence: 0.80,
+		Evidence:   []model.Evidence{{Type: model.EvidenceEmail, Description: "user1@example.com"}},
+	}
+	f2 := model.Finding{
+		ID:         "OPSEC-002",
+		Title:      "Email address disclosed",
+		Severity:   model.SeverityMedium,
+		Confidence: 0.80,
+		Evidence:   []model.Evidence{{Type: model.EvidenceEmail, Description: "user2@example.com"}},
+	}
+
+	// In new scan:
+	// - f1 is resolved (removed)
+	// - f2 modified (severity escalated to High, confidence 0.95)
+	// - f3 is newly added
+	f2Modified := model.Finding{
+		ID:         "OPSEC-002",
+		Title:      "Email address disclosed",
+		Severity:   model.SeverityHigh,
+		Confidence: 0.95,
+		Evidence:   []model.Evidence{{Type: model.EvidenceEmail, Description: "user2@example.com"}},
+	}
+	f3New := model.Finding{
+		ID:         "OPSEC-002",
+		Title:      "Email address disclosed",
+		Severity:   model.SeverityLow,
+		Confidence: 0.50,
+		Evidence:   []model.Evidence{{Type: model.EvidenceEmail, Description: "user3@example.com"}},
+	}
+
+	oldScan := model.ScanResult{
+		Target:    model.Target{Onion: "mod.onion"},
+		EndedAt:   t1,
+		Findings:  []model.Finding{f1, f2},
+		RiskScore: 30,
+	}
+	newScan := model.ScanResult{
+		Target:    model.Target{Onion: "mod.onion"},
+		EndedAt:   t2,
+		Findings:  []model.Finding{f2Modified, f3New},
+		RiskScore: 40,
+	}
+
+	d := Diff(oldScan, true, newScan)
+
+	if len(d.RemovedFindings) != 1 || d.RemovedFindings[0].Evidence[0].Description != "user1@example.com" {
+		t.Errorf("expected user1@example.com in removed findings, got %+v", d.RemovedFindings)
+	}
+	if len(d.NewFindings) != 1 || d.NewFindings[0].Evidence[0].Description != "user3@example.com" {
+		t.Errorf("expected user3@example.com in new findings, got %+v", d.NewFindings)
+	}
+	if len(d.ChangedFindings) != 1 {
+		t.Fatalf("expected 1 changed finding, got %d", len(d.ChangedFindings))
+	}
+	if d.ChangedFindings[0].NewFinding.Evidence[0].Description != "user2@example.com" {
+		t.Errorf("expected user2@example.com in changed findings, got %+v", d.ChangedFindings[0])
+	}
+	if d.UnchangedCount != 0 {
+		t.Errorf("expected unchanged count 0, got %d", d.UnchangedCount)
+	}
+}
+
+func TestDiff_MultipleFindingsWithoutEvidence(t *testing.T) {
+	t1 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 9, 12, 11, 0, 0, 0, time.UTC)
+
+	// Findings with same ID but different explanations/titles and no evidence
+	f1 := model.Finding{
+		ID:          "OPSEC-004",
+		Title:       "Debug endpoint exposed",
+		Explanation: "Exposed /debug/pprof endpoint",
+		Severity:    model.SeverityHigh,
+	}
+	f2 := model.Finding{
+		ID:          "OPSEC-004",
+		Title:       "Debug endpoint exposed",
+		Explanation: "Exposed /status endpoint",
+		Severity:    model.SeverityLow,
+	}
+
+	// In scan 2: /debug/pprof was fixed, /status remains, and /metrics added
+	f3 := model.Finding{
+		ID:          "OPSEC-004",
+		Title:       "Debug endpoint exposed",
+		Explanation: "Exposed /metrics endpoint",
+		Severity:    model.SeverityMedium,
+	}
+
+	oldScan := model.ScanResult{
+		Target:   model.Target{Onion: "endpoints.onion"},
+		EndedAt:  t1,
+		Findings: []model.Finding{f1, f2},
+	}
+	newScan := model.ScanResult{
+		Target:   model.Target{Onion: "endpoints.onion"},
+		EndedAt:  t2,
+		Findings: []model.Finding{f2, f3},
+	}
+
+	d := Diff(oldScan, true, newScan)
+
+	if len(d.RemovedFindings) != 1 || d.RemovedFindings[0].Explanation != "Exposed /debug/pprof endpoint" {
+		t.Errorf("expected pprof in removed findings, got %+v", d.RemovedFindings)
+	}
+	if len(d.NewFindings) != 1 || d.NewFindings[0].Explanation != "Exposed /metrics endpoint" {
+		t.Errorf("expected metrics in new findings, got %+v", d.NewFindings)
+	}
+	if len(d.PersistingFindings) != 1 || d.PersistingFindings[0].Explanation != "Exposed /status endpoint" {
+		t.Errorf("expected status in persisting findings, got %+v", d.PersistingFindings)
+	}
+	if d.UnchangedCount != 1 {
+		t.Errorf("expected unchanged count 1, got %d", d.UnchangedCount)
+	}
+}
