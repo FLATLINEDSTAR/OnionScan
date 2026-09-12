@@ -79,7 +79,6 @@ func CorrelateWithStore(target model.Target, findings []model.Finding, store Sto
 	hasIP := false
 	hasFingerprint := false
 	var ipEvidence []model.Evidence
-	var corroboratingEvidence []model.Evidence
 	corroboratingTypes := make(map[model.EvidenceType]bool)
 
 	for _, f := range findings {
@@ -91,10 +90,8 @@ func CorrelateWithStore(target model.Target, findings []model.Finding, store Sto
 			case model.EvidenceFingerprint:
 				hasFingerprint = true
 				corroboratingTypes[e.Type] = true
-				corroboratingEvidence = append(corroboratingEvidence, e)
 			case model.EvidenceTLS, model.EvidenceHostname:
 				corroboratingTypes[e.Type] = true
-				corroboratingEvidence = append(corroboratingEvidence, e)
 			}
 		}
 	}
@@ -107,9 +104,6 @@ func CorrelateWithStore(target model.Target, findings []model.Finding, store Sto
 			weights = append(weights, EvidenceWeight(t))
 		}
 		confidence := WeightedConfidence(weights)
-
-		allEv := append(ipEvidence, corroboratingEvidence...)
-		allEv = dedupeEvidence(allEv)
 
 		findings = append(findings, model.Finding{
 			ID:             "INFRA-002",
