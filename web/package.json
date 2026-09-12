@@ -8,7 +8,7 @@
     "start": "next start -p 3000"
   },
   "dependencies": {
-    "@types/cytoscape": "^3.21.9",
+    "@types/cytoscape": "^3.31.0",
     "cytoscape": "^3.34.3",
     "lucide-react": "^1.45.0",
     "next": "^16.3.5",
