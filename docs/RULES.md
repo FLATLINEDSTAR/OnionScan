@@ -30,6 +30,7 @@ grouped by prefix:
 | OPSEC-009 | Build environment or local file paths disclosed in JavaScript | Low | jsanalysis |
 | OPSEC-001 | External analytics/tracking script detected | Medium | external |
 | INFRA-003 | External resources referenced in page content | Info | external |
+| FP-002 | API endpoint pattern detected | Info | apidetect |
 
 ## Planned (see docs/ROADMAP.md Phase 2/3 and the issue tracker)
 
