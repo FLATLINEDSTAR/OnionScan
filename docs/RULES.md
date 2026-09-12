@@ -44,10 +44,12 @@ grouped by prefix:
 
 ## Contributing a new rule
 
-1. Pick the right prefix and next free number.
-2. Implement it inside an existing analyzer package, or create a new one
-   under `internal/analyzer/<name>/` implementing the `Analyzer` interface.
-3. Add the rule to this table.
-4. Include a test with at least one true-positive and one true-negative
-   fixture (see `docs/ROADMAP.md` Phase 1 testing item and
-   `CONTRIBUTING.md`).
+For comprehensive guidelines on proposing brand-new rule categories, reserving prefix namespaces, and avoiding ID collisions across concurrent PRs, see [`docs/RULE_CONTRIBUTIONS.md`](RULE_CONTRIBUTIONS.md).
+
+Quick summary:
+1. **Existing Category**: Check the table above for the highest sequential ID and verify open PRs to claim the next free number.
+2. **New Category / Range**: Open an RFC proposal issue with title `[Rule Category Proposal]: <Category> (<PREFIX>-xxx)` to pre-allocate the prefix before starting implementation.
+3. **Implementation**: Implement the rule inside an existing analyzer or create a new package under `internal/analyzer/<name>/` implementing the `analyzer.Analyzer` interface.
+4. **Testing**: Include unit tests with at least one true-positive and one true-negative fixture.
+5. **Documentation**: Add the rule to this table in your PR.
+

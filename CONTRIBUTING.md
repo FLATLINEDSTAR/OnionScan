@@ -29,8 +29,9 @@ Analyzers are the easiest way to contribute. Steps:
        Analyze(ctx context.Context, target model.Target, page model.Page) ([]model.Finding, error)
    }
    ```
-3. Give every Finding you emit a stable rule ID (see `docs/RULES.md` for
-   the prefix convention) and add it to that table.
+3. Give every Finding you emit a stable rule ID (see `docs/RULES.md` and
+   `docs/RULE_CONTRIBUTIONS.md` for prefix allocation and proposing new ranges)
+   and add it to that table.
 4. Prefer emitting **evidence with honest confidence** over a single
    high-confidence Finding from one weak signal — see
    `docs/ARCHITECTURE.md` "Why evidence-first."
