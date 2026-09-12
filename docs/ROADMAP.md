@@ -49,9 +49,9 @@ being worth doing. Don't jump to Phase 5 with a weak Phase 1.
 
 ## Phase 5 — API + dashboard (only after 1–4 are solid)
 
-- [ ] `POST /v1/scans`, `GET /v1/scans/:id`, `GET /v1/findings`,
+- [x] `POST /v1/scans`, `GET /v1/scans/:id`, `GET /v1/findings`,
       `GET /v1/assets`, `GET /v1/history`
-- [ ] React/Next.js dashboard consuming the API
+- [x] React/Next.js dashboard consuming the API
 - [ ] Evidence graph visualization (Cytoscape.js)
 
 ## Explicit non-goals
