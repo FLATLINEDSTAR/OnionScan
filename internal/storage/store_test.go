@@ -437,4 +437,3 @@ func TestStore_ListAssets(t *testing.T) {
 		}
 	}
 }
-
