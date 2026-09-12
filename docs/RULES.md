@@ -23,6 +23,8 @@ grouped by prefix:
 | INFRA-001 | Possible IP address reference (needs correlation) | Medium (low confidence) | opsec |
 | INFRA-002 | Possible origin infrastructure disclosure (correlated) | High | correlation |
 | FP-001 | Response fingerprint recorded | Info | fingerprint |
+| SEC-001 | TLS certificate issued to a clearnet hostname | High | tls |
+| SEC-002 | Weak/deprecated TLS configuration | Medium | tls |
 
 ## Planned (see docs/ROADMAP.md Phase 2/3 and the issue tracker)
 
@@ -32,8 +34,6 @@ grouped by prefix:
 | OPSEC-003 | Public EXIF metadata in uploaded images |
 | OPSEC-004 | Debug/admin endpoint exposed |
 | OPSEC-008 | Cloud provider metadata endpoint reference |
-| SEC-001 | TLS certificate issued to a clearnet hostname |
-| SEC-002 | Weak/deprecated TLS configuration |
 | CRED-001 | API key or token pattern in page content or JS |
 | CRED-002 | Private key header (`-----BEGIN ... PRIVATE KEY-----`) found |
 
