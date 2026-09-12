@@ -1,10 +1,12 @@
 package correlation
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/AryanXCode646/OnionScan/internal/model"
+	"github.com/AryanXCode646/OnionScan/internal/storage"
 )
 
 func TestCorrelate_IPOnly_NoInfra002(t *testing.T) {
@@ -113,5 +115,94 @@ func TestCorrelate_IPAndFingerprint_EmitsInfra002(t *testing.T) {
 	}
 	if len(result) != len(findings)+1 {
 		t.Errorf("expected %d findings, got %d", len(findings)+1, len(result))
+	}
+}
+
+type mockStore struct {
+	links map[string][]storage.TargetLink
+}
+
+func (m *mockStore) FindCoOccurringTargets(evType model.EvidenceType, rawVal string) ([]storage.TargetLink, error) {
+	key := string(evType) + ":" + rawVal
+	return m.links[key], nil
+}
+
+func TestCorrelateWithStore_CrossTargetMatches_EmitsInfra004(t *testing.T) {
+	target := model.Target{Onion: "service-alpha.onion"}
+	findings := []model.Finding{
+		{
+			ID:       "INFRA-001",
+			Analyzer: "opsec",
+			Evidence: []model.Evidence{
+				{Type: model.EvidenceIP, Description: "203.0.113.5", Source: "http://service-alpha.onion/"},
+			},
+		},
+	}
+
+	store := &mockStore{
+		links: map[string][]storage.TargetLink{
+			"ip:203.0.113.5": {
+				{Onion: "service-alpha.onion"},
+				{Onion: "service-beta.onion"},
+			},
+		},
+	}
+
+	result := CorrelateWithStore(target, findings, store)
+
+	var infra004 *model.Finding
+	for i := range result {
+		if result[i].ID == "INFRA-004" {
+			infra004 = &result[i]
+			break
+		}
+	}
+
+	if infra004 == nil {
+		t.Fatalf("expected INFRA-004 finding from cross-target correlation, none found")
+	}
+
+	if infra004.Severity != model.SeverityHigh {
+		t.Errorf("expected SeverityHigh for INFRA-004, got %s", infra004.Severity)
+	}
+
+	foundPeer := false
+	for _, ev := range infra004.Evidence {
+		if ev.Type == model.EvidenceIP && strings.Contains(ev.Description, "service-beta.onion") {
+			foundPeer = true
+			break
+		}
+	}
+	if !foundPeer {
+		t.Errorf("expected peer target service-beta.onion in INFRA-004 evidence, got %+v", infra004.Evidence)
+	}
+}
+
+func TestCorrelateWithStore_NoPeerMatches_NoInfra004(t *testing.T) {
+	target := model.Target{Onion: "service-alpha.onion"}
+	findings := []model.Finding{
+		{
+			ID:       "INFRA-001",
+			Analyzer: "opsec",
+			Evidence: []model.Evidence{
+				{Type: model.EvidenceIP, Description: "203.0.113.5", Source: "http://service-alpha.onion/"},
+			},
+		},
+	}
+
+	// Store only knows about service-alpha.onion (self), no peers
+	store := &mockStore{
+		links: map[string][]storage.TargetLink{
+			"ip:203.0.113.5": {
+				{Onion: "service-alpha.onion"},
+			},
+		},
+	}
+
+	result := CorrelateWithStore(target, findings, store)
+	for _, f := range result {
+		if f.ID == "INFRA-004" {
+			t.Errorf("did not expect INFRA-004 when only self target matches")
+		}
 	}
 }

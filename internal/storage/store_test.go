@@ -137,3 +137,88 @@ func TestStore_NonExistentTarget(t *testing.T) {
 		t.Errorf("expected empty history for missing target, got %d entries", len(history))
 	}
 }
+
+func TestStore_EvidenceIndexingAndLookup(t *testing.T) {
+	tempDir := t.TempDir()
+	store := New(tempDir)
+
+	target1 := "alpha.onion"
+	target2 := "beta.onion"
+	sharedIP := "198.51.100.42"
+
+	scan1 := model.ScanResult{
+		Target:    model.Target{Onion: target1},
+		StartedAt: time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC),
+		EndedAt:   time.Date(2026, 9, 12, 10, 1, 0, 0, time.UTC),
+		Findings: []model.Finding{
+			{
+				ID:       "INFRA-001",
+				Analyzer: "opsec",
+				Evidence: []model.Evidence{
+					{Type: model.EvidenceIP, Description: sharedIP, Source: "http://alpha.onion/about"},
+					{Type: model.EvidenceEmail, Description: "admin@sharedcorp.com", Source: "http://alpha.onion/contact"},
+					{Type: model.EvidenceCredential, Description: "secret_token_redacted", Source: "http://alpha.onion/config"},
+				},
+			},
+		},
+	}
+
+	if _, err := store.Save(scan1); err != nil {
+		t.Fatalf("failed to save scan1: %v", err)
+	}
+
+	scan2 := model.ScanResult{
+		Target:    model.Target{Onion: target2},
+		StartedAt: time.Date(2026, 9, 12, 11, 0, 0, 0, time.UTC),
+		EndedAt:   time.Date(2026, 9, 12, 11, 1, 0, 0, time.UTC),
+		Findings: []model.Finding{
+			{
+				ID:       "INFRA-001",
+				Analyzer: "opsec",
+				Evidence: []model.Evidence{
+					{Type: model.EvidenceIP, Description: sharedIP, Source: "http://beta.onion/api"},
+				},
+			},
+		},
+	}
+
+	if _, err := store.Save(scan2); err != nil {
+		t.Fatalf("failed to save scan2: %v", err)
+	}
+
+	// 1. Query shared IP -> should return both alpha.onion and beta.onion
+	links, err := store.FindCoOccurringTargets(model.EvidenceIP, sharedIP)
+	if err != nil {
+		t.Fatalf("FindCoOccurringTargets failed: %v", err)
+	}
+	if len(links) != 2 {
+		t.Fatalf("expected 2 targets for shared IP, got %d", len(links))
+	}
+
+	// 2. Query email -> should only return alpha.onion
+	emailLinks, err := store.FindCoOccurringTargets(model.EvidenceEmail, "ADMIN@SharedCorp.COM") // tests canonicalization
+	if err != nil {
+		t.Fatalf("FindCoOccurringTargets email failed: %v", err)
+	}
+	if len(emailLinks) != 1 || emailLinks[0].Onion != target1 {
+		t.Fatalf("expected 1 target (alpha.onion) for email, got %+v", emailLinks)
+	}
+
+	// 3. Query credentials -> must be empty (safety rule)
+	credLinks, err := store.FindCoOccurringTargets(model.EvidenceCredential, "secret_token_redacted")
+	if err != nil {
+		t.Fatalf("unexpected cred query error: %v", err)
+	}
+	if len(credLinks) != 0 {
+		t.Fatalf("expected 0 targets for credentials (safety rule), got %d", len(credLinks))
+	}
+
+	// 4. Test Targets() listing
+	targets, err := store.Targets()
+	if err != nil {
+		t.Fatalf("Targets() failed: %v", err)
+	}
+	if len(targets) != 2 || targets[0] != "alpha.onion" || targets[1] != "beta.onion" {
+		t.Fatalf("expected [alpha.onion beta.onion], got %+v", targets)
+	}
+}

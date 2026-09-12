@@ -66,7 +66,7 @@ func Run(ctx context.Context, client *http.Client, store *storage.Store, target 
 		}
 	}
 
-	findings = correlation.Correlate(target, findings)
+	findings = correlation.CorrelateWithStore(target, findings, store)
 
 	result := model.ScanResult{
 		Target:    target,

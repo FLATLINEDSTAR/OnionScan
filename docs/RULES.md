@@ -34,6 +34,7 @@ grouped by prefix:
 | CRED-001 | API key or token pattern disclosed | High | credentials |
 | CRED-002 | Private key header disclosed | Critical | credentials |
 | OPSEC-003 | Public EXIF metadata in uploaded images | Low / High | metadata |
+| INFRA-004 | Shared infrastructure or identity correlated across multiple targets | High | correlation |
 
 ## Planned (see docs/ROADMAP.md Phase 2/3 and the issue tracker)
 
