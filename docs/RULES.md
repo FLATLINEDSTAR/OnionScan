@@ -26,6 +26,8 @@ grouped by prefix:
 | SEC-001 | TLS certificate issued to a clearnet hostname | High | tls |
 | SEC-002 | Weak/deprecated TLS configuration | Medium | tls |
 | OPSEC-004 | Debug/admin endpoint exposed | Low | robots |
+| SEC-003 | JavaScript source map reference disclosed | Low | jsanalysis |
+| OPSEC-009 | Build environment or local file paths disclosed in JavaScript | Low | jsanalysis |
 
 ## Planned (see docs/ROADMAP.md Phase 2/3 and the issue tracker)
 
