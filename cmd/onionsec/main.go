@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/AryanXCode646/OnionScan/internal/config"
+	"github.com/AryanXCode646/OnionScan/internal/graph"
 	"github.com/AryanXCode646/OnionScan/internal/model"
 	"github.com/AryanXCode646/OnionScan/internal/report"
 	"github.com/AryanXCode646/OnionScan/internal/scan"
@@ -40,6 +41,8 @@ func main() {
 		cmdScan(os.Args[2:])
 	case "report":
 		cmdReport(os.Args[2:])
+	case "graph":
+		cmdGraph(os.Args[2:])
 	case "monitor":
 		cmdMonitor(os.Args[2:])
 	case "version":
@@ -58,6 +61,7 @@ Only scan targets you own or are authorized to test.
 Usage:
   onionsec scan <target.onion> [--config <path>] [--json <out.json>] [--md <out.md>]
   onionsec report <target.onion>
+  onionsec graph <target.onion> [--dot] [--out <path>]
   onionsec monitor <target.onion>
   onionsec version`)
 }
@@ -185,6 +189,67 @@ func cmdReport(args []string) {
 		os.Exit(1)
 	}
 	_ = report.WriteMarkdown(os.Stdout, result)
+}
+
+func cmdGraph(args []string) {
+	var targetOnion string
+	var dotFormat bool
+	var outPath string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--dot" || arg == "-dot" || arg == "--format=dot" || arg == "-format=dot" {
+			dotFormat = true
+		} else if arg == "--out" || arg == "-out" {
+			if i+1 < len(args) {
+				outPath = args[i+1]
+				i++
+			} else {
+				fmt.Fprintln(os.Stderr, "error: --out requires a path argument")
+				os.Exit(1)
+			}
+		} else if strings.HasPrefix(arg, "--out=") || strings.HasPrefix(arg, "-out=") {
+			parts := strings.SplitN(arg, "=", 2)
+			outPath = parts[1]
+		} else if targetOnion == "" && !strings.HasPrefix(arg, "-") {
+			targetOnion = arg
+		}
+	}
+
+	if targetOnion == "" {
+		fmt.Fprintln(os.Stderr, "usage: onionsec graph <target.onion> [--dot] [--out <path>]")
+		os.Exit(1)
+	}
+
+	store := storage.New(defaultDataDir())
+	g, err := graph.BuildGraph(targetOnion, store)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "graph error:", err)
+		os.Exit(1)
+	}
+
+	w := os.Stdout
+	if outPath != "" {
+		f, err := os.Create(outPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "create output file:", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		w = f
+	}
+
+	if dotFormat {
+		if err := graph.RenderDOT(w, g); err != nil {
+			fmt.Fprintln(os.Stderr, "render dot error:", err)
+			os.Exit(1)
+		}
+	} else {
+		if err := graph.RenderText(w, g); err != nil {
+			fmt.Fprintln(os.Stderr, "render text error:", err)
+			os.Exit(1)
+		}
+	}
 }
 
 func cmdMonitor(args []string) {
