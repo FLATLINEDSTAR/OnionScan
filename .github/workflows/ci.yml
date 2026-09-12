@@ -17,6 +17,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          cache: false
 
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
@@ -29,3 +30,8 @@ jobs:
 
       - name: Run tests
         run: go test -v ./...
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.60
