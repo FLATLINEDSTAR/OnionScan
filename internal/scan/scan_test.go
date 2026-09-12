@@ -60,12 +60,12 @@ func TestRun_WiresClientToAnalyzers(t *testing.T) {
 		if r.URL.Path == "/robots.txt" {
 			robotsRequested = true
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("User-agent: *\nDisallow: /admin/\n"))
+			_, _ = w.Write([]byte("User-agent: *\nDisallow: /admin/\n"))
 			return
 		}
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<html><body><h1>Hello Onion</h1></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><h1>Hello Onion</h1></body></html>`))
 	}))
 	defer ts.Close()
 

@@ -170,7 +170,7 @@ func TestAnalyze_TorClientInvoked(t *testing.T) {
 		requestedPaths = append(requestedPaths, r.URL.Path)
 		if r.URL.Path == "/robots.txt" {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("User-agent: *\nDisallow: /admin/\n"))
+			_, _ = w.Write([]byte("User-agent: *\nDisallow: /admin/\n"))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)

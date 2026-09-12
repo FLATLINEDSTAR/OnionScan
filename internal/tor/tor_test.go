@@ -90,13 +90,13 @@ func startMockSOCKS5(t *testing.T) (string, func()) {
 				targetConn, err := net.DialTimeout("tcp", targetAddr, 2*time.Second)
 				if err != nil {
 					// 0x05, 0x05 (Connection refused), 0x00, 0x01, ...
-					c.Write([]byte{socksVersion5, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+					_, _ = c.Write([]byte{socksVersion5, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 					return
 				}
 				defer targetConn.Close()
 
 				// Succeeded: 0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, port
-				c.Write([]byte{socksVersion5, repSucceeded, 0x00, 0x01, 127, 0, 0, 1, 0, 0})
+				_, _ = c.Write([]byte{socksVersion5, repSucceeded, 0x00, 0x01, 127, 0, 0, 1, 0, 0})
 
 				// Bidirectional copy
 				errCh := make(chan error, 2)
@@ -167,7 +167,7 @@ func TestDialContext_ThroughMockSOCKS5(t *testing.T) {
 			defer conn.Close()
 			buf := make([]byte, 128)
 			n, _ := conn.Read(buf)
-			conn.Write(append([]byte("echo: "), buf[:n]...))
+			_, _ = conn.Write(append([]byte("echo: "), buf[:n]...))
 		}
 	}()
 
@@ -214,7 +214,7 @@ func TestDialTLSContext_ThroughMockSOCKS5(t *testing.T) {
 			defer conn.Close()
 			buf := make([]byte, 64)
 			n, _ := conn.Read(buf)
-			conn.Write(append([]byte("tls-echo: "), buf[:n]...))
+			_, _ = conn.Write(append([]byte("tls-echo: "), buf[:n]...))
 		}
 	}()
 
@@ -251,7 +251,7 @@ func TestDialTLSContext_ThroughMockSOCKS5(t *testing.T) {
 func TestNewHTTPClient_ThroughMockSOCKS5(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok from mock server"))
+		_, _ = w.Write([]byte("ok from mock server"))
 	}))
 	defer ts.Close()
 

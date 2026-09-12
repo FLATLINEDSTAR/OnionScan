@@ -341,7 +341,7 @@ func TestMetadataAnalyzer_TorClientInvoked(t *testing.T) {
 		requestReceived = true
 		w.Header().Set("Content-Type", "image/jpeg")
 		w.WriteHeader(http.StatusOK)
-		w.Write(jpegBytes)
+		_, _ = w.Write(jpegBytes)
 	}))
 	defer ts.Close()
 
