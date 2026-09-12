@@ -73,7 +73,7 @@ func TestCrawl_RespectsMaxPages(t *testing.T) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		// Infinite chain: each page links to the next number
 		var next int
-		fmt.Sscanf(r.URL.Path, "/page%d", &next)
+		_, _ = fmt.Sscanf(r.URL.Path, "/page%d", &next)
 		fmt.Fprintf(w, `<html><body><a href="/page%d">Next</a></body></html>`, next+1)
 	}))
 	defer ts.Close()

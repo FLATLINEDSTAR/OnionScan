@@ -22,3 +22,5 @@ linters-settings:
       - fmt.Print
       - fmt.Printf
       - fmt.Println
+      - fmt.Scanf
+      - fmt.Sscanf
